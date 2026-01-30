@@ -1,6 +1,6 @@
 # Garry's Mod Mount for s&box
 
-Load Garry's Mod content directly in s&box. Models, materials, textures - it all just works.
+Load Garry's Mod content directly in s&box. Models, materials, textures.
 
 ## What it does
 
