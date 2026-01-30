@@ -126,7 +126,10 @@ public partial class GModMount : BaseGameMount
 			}
 		}
 
-		Log.Info( $"GModMount: Loaded {_vpkArchives.Count} VPK archives, {_gmaArchives.Count} GMA addons" );
+		// Load loose files from garrysmod/models and garrysmod/materials (manually installed content)
+		var looseFileCount = MountLooseFiles( context );
+
+		Log.Info( $"GModMount: Loaded {_vpkArchives.Count} VPK archives, {_gmaArchives.Count} GMA addons, {looseFileCount} loose files" );
 		IsMounted = true;
 		return Task.CompletedTask;
 	}
@@ -200,6 +203,88 @@ public partial class GModMount : BaseGameMount
 		}
 	}
 
+	private int MountLooseFiles( MountContext context )
+	{
+		int count = 0;
+		var gmodRoot = Path.Combine( _gmodPath, "garrysmod" );
+
+		// Scan models folder
+		var modelsPath = Path.Combine( gmodRoot, "models" );
+		if ( System.IO.Directory.Exists( modelsPath ) )
+		{
+			foreach ( var filePath in System.IO.Directory.EnumerateFiles( modelsPath, "*.mdl", SearchOption.AllDirectories ) )
+			{
+				var relativePath = Path.GetRelativePath( gmodRoot, filePath ).Replace( '\\', '/' ).ToLowerInvariant();
+				var pathWithoutExt = relativePath[..^4]; // Remove .mdl
+				
+				context.Add( ResourceType.Model, $"custom/{pathWithoutExt}", new GModModelLoose( this, filePath, gmodRoot ) );
+				count++;
+			}
+		}
+
+		// Scan materials folder
+		var materialsPath = Path.Combine( gmodRoot, "materials" );
+		if ( System.IO.Directory.Exists( materialsPath ) )
+		{
+			// VMT files
+			foreach ( var filePath in System.IO.Directory.EnumerateFiles( materialsPath, "*.vmt", SearchOption.AllDirectories ) )
+			{
+				var relativePath = Path.GetRelativePath( gmodRoot, filePath ).Replace( '\\', '/' ).ToLowerInvariant();
+				var pathWithoutExt = relativePath[..^4]; // Remove .vmt
+				
+				// Mount at both native and custom/ paths
+				context.Add( ResourceType.Material, pathWithoutExt, new GModMaterialLoose( this, filePath, gmodRoot ) );
+				context.Add( ResourceType.Material, $"custom/{pathWithoutExt}", new GModMaterialLoose( this, filePath, gmodRoot ) );
+				count++;
+			}
+
+			// VTF files
+			foreach ( var filePath in System.IO.Directory.EnumerateFiles( materialsPath, "*.vtf", SearchOption.AllDirectories ) )
+			{
+				var relativePath = Path.GetRelativePath( gmodRoot, filePath ).Replace( '\\', '/' ).ToLowerInvariant();
+				var pathWithoutExt = relativePath[..^4]; // Remove .vtf
+				
+				// Mount at both native and custom/ paths
+				context.Add( ResourceType.Texture, pathWithoutExt, new GModTextureLoose( this, filePath ) );
+				context.Add( ResourceType.Texture, $"custom/{pathWithoutExt}", new GModTextureLoose( this, filePath ) );
+				count++;
+			}
+		}
+
+		// Scan sound folder
+		var soundPath = Path.Combine( gmodRoot, "sound" );
+		if ( System.IO.Directory.Exists( soundPath ) )
+		{
+			foreach ( var filePath in System.IO.Directory.EnumerateFiles( soundPath, "*.wav", SearchOption.AllDirectories ) )
+			{
+				var relativePath = Path.GetRelativePath( gmodRoot, filePath ).Replace( '\\', '/' ).ToLowerInvariant();
+				var pathWithoutExt = relativePath[..^4];
+				
+				context.Add( ResourceType.Sound, $"custom/{pathWithoutExt}", new GModSoundLoose( filePath ) );
+				count++;
+			}
+			foreach ( var filePath in System.IO.Directory.EnumerateFiles( soundPath, "*.mp3", SearchOption.AllDirectories ) )
+			{
+				var relativePath = Path.GetRelativePath( gmodRoot, filePath ).Replace( '\\', '/' ).ToLowerInvariant();
+				var pathWithoutExt = relativePath[..^4];
+				
+				context.Add( ResourceType.Sound, $"custom/{pathWithoutExt}", new GModSoundLoose( filePath ) );
+				count++;
+			}
+		}
+
+		if ( count > 0 )
+			Log.Info( $"Loose: Mounted {count} files from garrysmod/ folder" );
+
+		return count;
+	}
+
+	internal string GetLooseFilePath( string relativePath )
+	{
+		var fullPath = Path.Combine( _gmodPath, "garrysmod", relativePath.Replace( '/', '\\' ) );
+		return File.Exists( fullPath ) ? fullPath : null;
+	}
+
 	internal bool FileExists( string path )
 	{
 		path = path.ToLowerInvariant().Replace( '\\', '/' );
@@ -215,6 +300,11 @@ public partial class GModMount : BaseGameMount
 			if ( archive.FindEntry( path ) != null )
 				return true;
 		}
+
+		// Check loose files
+		var loosePath = GetLooseFilePath( path );
+		if ( loosePath != null )
+			return true;
 
 		return false;
 	}
@@ -238,6 +328,11 @@ public partial class GModMount : BaseGameMount
 			if ( entry != null )
 				return archive.ReadFile( entry );
 		}
+
+		// Finally check loose files
+		var loosePath = GetLooseFilePath( path );
+		if ( loosePath != null )
+			return File.ReadAllBytes( loosePath );
 
 		return null;
 	}
