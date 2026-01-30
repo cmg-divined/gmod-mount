@@ -49,7 +49,7 @@ public static class SourceModelLoader
 	/// </summary>
 	/// <param name="sourceModel">The parsed Source model</param>
 	/// <param name="lod">LOD level to use (0 = highest detail)</param>
-	/// <param name="skinFamily">Skin family index for material replacement</param>
+	/// <param name="skinFamily">Skin family index for material replacement (deprecated, skins are now registered as material groups)</param>
 	/// <param name="path">Resource path for the model</param>
 	/// <param name="mount">Mount to load materials from</param>
 	/// <returns>s&box Model</returns>
@@ -60,14 +60,18 @@ public static class SourceModelLoader
 		if ( !string.IsNullOrEmpty( path ) )
 			builder.WithName( path );
 
-		// Build material list with skin replacement
-		var materials = BuildMaterialList( sourceModel, skinFamily, mount );
+		// Build base material list (skin 0)
+		var baseMaterials = BuildMaterialList( sourceModel, 0, mount );
 
 		// Add bones
 		AddBones( builder, sourceModel );
 
-		// Add meshes from each body part
-		AddMeshes( builder, sourceModel, materials, lod );
+		// Add meshes from each body part, tracking unique materials used (by instance)
+		var uniqueMaterials = new List<(int mdlIndex, Material material)>();
+		AddMeshes( builder, sourceModel, baseMaterials, lod, uniqueMaterials );
+
+		// Add material groups for each skin family
+		AddMaterialGroups( builder, sourceModel, mount, baseMaterials, uniqueMaterials );
 
 		// Add attachments
 		AddAttachments( builder, sourceModel );
@@ -75,7 +79,15 @@ public static class SourceModelLoader
 		// Add physics collision and ragdoll constraints
 		AddPhysics( builder, sourceModel );
 
-		return builder.Create();
+		var model = builder.Create();
+		
+		// Log model creation summary
+		if ( model != null )
+		{
+			Log.Info( $"SourceModelLoader: Created model with {model.Materials.Length} materials, {model.MaterialGroupCount} material groups" );
+		}
+		
+		return model;
 	}
 
 	/// <summary>
@@ -99,62 +111,123 @@ public static class SourceModelLoader
 				}
 			}
 
-			// Get material name
-			string materialName = materialIndex < model.Mdl.Materials.Count
-				? model.Mdl.Materials[materialIndex]
-				: model.Mdl.Materials[i];
-
-			// Try to load the material from the mount
-			Material material = null;
-			bool foundMaterial = false;
-			if ( mount != null && !string.IsNullOrEmpty( materialName ) )
-			{
-				// Search in material directories - check if VMT exists before loading
-				foreach ( var matDir in model.Mdl.MaterialPaths )
-				{
-					var matPath = $"materials/{matDir}{materialName}".Replace( "\\", "/" ).Replace( "//", "/" ).TrimStart( '/' );
-					var vmtPath = $"{matPath}.vmt";
-					var mountPath = $"mount://garrysmod/{matPath}.vmat";
-					
-					// Only try to load if the VMT file actually exists in the VPK
-					if ( mount.FileExists( vmtPath ) )
-					{
-						material = Material.Load( mountPath );
-						if ( material != null && material.IsValid() )
-						{
-							foundMaterial = true;
-							break;
-						}
-					}
-				}
-
-				// Try without material path prefix
-				if ( !foundMaterial )
-				{
-					var matPath = $"materials/{materialName}".Replace( "\\", "/" ).TrimStart( '/' );
-					var vmtPath = $"{matPath}.vmt";
-					var mountPath = $"mount://garrysmod/{matPath}.vmat";
-					
-					if ( mount.FileExists( vmtPath ) )
-					{
-						material = Material.Load( mountPath );
-						if ( material != null && material.IsValid() )
-						{
-							foundMaterial = true;
-						}
-					}
-				}
-				
-				if ( !foundMaterial )
-				{
-					Log.Warning( $"Material not found: '{materialName}'" );
-				}
-			}
-
-			materials.Add( material ?? DefaultMaterial );
+			materials.Add( LoadMaterial( model, materialIndex, mount ) );
 		}
 
 		return materials;
+	}
+
+	/// <summary>
+	/// Add material groups (skins) to the model.
+	/// </summary>
+	private static void AddMaterialGroups( ModelBuilder builder, SourceModel model, GModMount mount, List<Material> baseMaterials, List<(int mdlIndex, Material material)> uniqueMaterials )
+	{
+		var skinFamilies = model.Mdl.SkinFamilies;
+		if ( skinFamilies == null || skinFamilies.Count <= 1 )
+			return;
+
+		if ( uniqueMaterials.Count == 0 )
+		{
+			Log.Warning( "SourceModelLoader: No unique materials found, skipping skin groups" );
+			return;
+		}
+
+		Log.Info( $"SourceModelLoader: Registering {skinFamilies.Count} skin families" );
+		Log.Info( $"  Unique materials used ({uniqueMaterials.Count}): [{string.Join( ", ", uniqueMaterials.Select( m => m.mdlIndex ) )}]" );
+
+		var defaultRefs = skinFamilies[0];
+
+		// Each group will only have the base unique materials count (no padding)
+		int totalMaterialCount = uniqueMaterials.Count;
+		Log.Info( $"  Materials per group: {totalMaterialCount}" );
+
+		// Create material groups for ALL skins including default (skin 0)
+		// Each group must have the same number of materials as Model.Materials will have
+		for ( int skinIdx = 0; skinIdx < skinFamilies.Count; skinIdx++ )
+		{
+			var skinName = skinIdx == 0 ? "default" : $"skin{skinIdx}";
+			var materialGroup = builder.AddMaterialGroup( skinName );
+			var skinRefs = skinFamilies[skinIdx];
+			
+			Log.Info( $"  Building material group '{skinName}':" );
+			
+			// Add materials in the exact order they were used by meshes
+			int slotIdx = 0;
+			foreach ( var (baseMdlIndex, baseMaterial) in uniqueMaterials )
+			{
+				// Get the replacement material index for this skin
+				int resolvedIndex = (baseMdlIndex < skinRefs.Length) ? skinRefs[baseMdlIndex] : baseMdlIndex;
+				int defaultIndex = (baseMdlIndex < defaultRefs.Length) ? defaultRefs[baseMdlIndex] : baseMdlIndex;
+				
+				Material material;
+				if ( resolvedIndex != defaultIndex )
+				{
+					// This material changed - load the replacement
+					material = LoadMaterial( model, resolvedIndex, mount );
+					var baseName = baseMdlIndex < model.Mdl.Materials.Count ? model.Mdl.Materials[baseMdlIndex] : "?";
+					var resolvedName = resolvedIndex < model.Mdl.Materials.Count ? model.Mdl.Materials[resolvedIndex] : "?";
+					Log.Info( $"    [{slotIdx}] {baseName} -> {resolvedName}, mat={material?.ResourcePath ?? "null"}" );
+				}
+				else
+				{
+					// Use the EXACT same material instance that the mesh uses
+					material = baseMaterial;
+				}
+				
+				materialGroup.AddMaterial( material );
+				slotIdx++;
+			}
+		}
+		
+		Log.Info( $"  Created {skinFamilies.Count} material groups with {totalMaterialCount} materials each" );
+	}
+
+	/// <summary>
+	/// Load a material by index from the model.
+	/// </summary>
+	private static Material LoadMaterial( SourceModel model, int materialIndex, GModMount mount )
+	{
+		// Get material name
+		string materialName = materialIndex < model.Mdl.Materials.Count
+			? model.Mdl.Materials[materialIndex]
+			: null;
+
+		if ( string.IsNullOrEmpty( materialName ) )
+			return DefaultMaterial;
+
+		// Try to load the material from the mount
+		if ( mount != null )
+		{
+			// Search in material directories - check if VMT exists before loading
+			foreach ( var matDir in model.Mdl.MaterialPaths )
+			{
+				var matPath = $"materials/{matDir}{materialName}".Replace( "\\", "/" ).Replace( "//", "/" ).TrimStart( '/' );
+				var vmtPath = $"{matPath}.vmt";
+				var mountPath = $"mount://garrysmod/{matPath}.vmat";
+				
+				// Only try to load if the VMT file actually exists
+				if ( mount.FileExists( vmtPath ) )
+				{
+					var material = Material.Load( mountPath );
+					if ( material != null && material.IsValid() )
+						return material;
+				}
+			}
+
+			// Try without material path prefix
+			var directPath = $"materials/{materialName}".Replace( "\\", "/" ).TrimStart( '/' );
+			var directVmtPath = $"{directPath}.vmt";
+			var directMountPath = $"mount://garrysmod/{directPath}.vmat";
+			
+			if ( mount.FileExists( directVmtPath ) )
+			{
+				var material = Material.Load( directMountPath );
+				if ( material != null && material.IsValid() )
+					return material;
+			}
+		}
+
+		return DefaultMaterial;
 	}
 
 	/// <summary>
@@ -202,7 +275,7 @@ public static class SourceModelLoader
 	/// <summary>
 	/// Add meshes from all body parts and models.
 	/// </summary>
-	private static void AddMeshes( ModelBuilder builder, SourceModel model, List<Material> materials, int lod )
+	private static void AddMeshes( ModelBuilder builder, SourceModel model, List<Material> materials, int lod, List<(int mdlIndex, Material material)> uniqueMaterials )
 	{
 		var vvd = model.Vvd;
 		var vtx = model.Vtx;
@@ -216,11 +289,20 @@ public static class SourceModelLoader
 		// This is how Crowbar calculates bodyPartVertexIndexStart
 		int bodyPartVertexIndexStart = 0;
 
+		Log.Info( $"SourceModelLoader: Processing {mdl.BodyParts.Count} body parts" );
+
 		// Process each body part
 		for ( int bpIdx = 0; bpIdx < mdl.BodyParts.Count && bpIdx < vtx.BodyParts.Count; bpIdx++ )
 		{
 			var mdlBodyPart = mdl.BodyParts[bpIdx];
 			var vtxBodyPart = vtx.BodyParts[bpIdx];
+			var bodyPartName = mdlBodyPart.Name;
+
+			Log.Info( $"  BodyPart '{bodyPartName}': {mdlBodyPart.Models.Count} models" );
+
+			// Track whether this body part has any empty choices
+			bool hasEmptyChoice = false;
+			int nonEmptyModelCount = 0;
 
 			// Process each model in the body part
 			for ( int modelIdx = 0; modelIdx < mdlBodyPart.Models.Count && modelIdx < vtxBodyPart.Models.Count; modelIdx++ )
@@ -228,9 +310,31 @@ public static class SourceModelLoader
 				var mdlModel = mdlBodyPart.Models[modelIdx];
 				var vtxModel = vtxBodyPart.Models[modelIdx];
 
-				// Skip blank/empty models
-				if ( string.IsNullOrEmpty( mdlModel.Name ) || mdlModel.Name.StartsWith( "blank" ) )
+				// Check if this is an empty/blank model
+				bool isEmpty = string.IsNullOrEmpty( mdlModel.Name ) || 
+				               mdlModel.Name.StartsWith( "blank", StringComparison.OrdinalIgnoreCase ) ||
+				               mdlModel.Meshes.Count == 0;
+
+				if ( isEmpty )
+				{
+					hasEmptyChoice = true;
+					// Empty model - still need to register the body group choice
+					// Create a tiny invisible mesh so the choice exists in s&box
+					Log.Info( $"    Model {modelIdx}: (off) - registering empty body group choice {modelIdx}" );
+					var emptyMesh = CreateEmptyMesh( $"{bodyPartName} {modelIdx}" );
+					if ( emptyMesh != null )
+					{
+						builder.AddMesh( emptyMesh, lod, bodyPartName, modelIdx );
+					}
 					continue;
+				}
+
+				nonEmptyModelCount++;
+				
+				// Get a clean display name from the model (strip .smd extension)
+				string modelDisplayName = GetModelDisplayName( mdlModel.Name, modelIdx );
+				
+				Log.Info( $"    Model {modelIdx}: '{modelDisplayName}' - {mdlModel.Meshes.Count} meshes -> body group '{bodyPartName}' choice {modelIdx}" );
 
 				// Get the LOD data (use requested LOD, or fall back to 0)
 				int lodIdx = Math.Min( lod, vtxModel.Lods.Count - 1 );
@@ -244,10 +348,17 @@ public static class SourceModelLoader
 					var mdlMesh = mdlModel.Meshes[meshIdx];
 					var vtxMesh = vtxLod.Meshes[meshIdx];
 
-					// Get material
-					var material = mdlMesh.MaterialIndex < materials.Count
-						? materials[mdlMesh.MaterialIndex]
+					// Get material for this mesh and track unique material indices
+					int materialIndex = mdlMesh.MaterialIndex;
+					var material = materialIndex < materials.Count
+						? materials[materialIndex]
 						: DefaultMaterial;
+
+					// Track unique materials in order of first use (by instance)
+					if ( !uniqueMaterials.Any( m => m.material == material ) )
+					{
+						uniqueMaterials.Add( (materialIndex, material) );
+					}
 
 					// Build mesh from strip groups
 					// Pass the cumulative vertex start index for proper VVD indexing
@@ -258,19 +369,51 @@ public static class SourceModelLoader
 						vertices,
 						tangents,
 						material,
-						bodyPartVertexIndexStart
+						bodyPartVertexIndexStart,
+						$"{bodyPartName} {modelIdx}"
 					);
 
 					if ( mesh != null )
 					{
-						builder.AddMesh( mesh );
+						// Add mesh with body group info
+						// groupName = body part name, choiceIndex = model index within body part
+						builder.AddMesh( mesh, lod, bodyPartName, modelIdx );
 					}
 				}
 
 				// Add this model's vertex count to the cumulative total
 				bodyPartVertexIndexStart += mdlModel.VertexCount;
 			}
+
+			// If this body part has only 1 model and no empty choice, add an "off" option
+			// This allows users to toggle single-model body groups on/off
+			if ( nonEmptyModelCount == 1 && !hasEmptyChoice )
+			{
+				int offChoiceIndex = mdlBodyPart.Models.Count; // Add as the next choice
+				Log.Info( $"    Adding implicit 'off' choice {offChoiceIndex} for single-model body group '{bodyPartName}'" );
+				var emptyMesh = CreateEmptyMesh( $"{bodyPartName} {offChoiceIndex}" );
+				if ( emptyMesh != null )
+				{
+					builder.AddMesh( emptyMesh, lod, bodyPartName, offChoiceIndex );
+				}
+			}
 		}
+	}
+
+	/// <summary>
+	/// Get a clean display name for a model.
+	/// </summary>
+	private static string GetModelDisplayName( string modelName, int modelIndex )
+	{
+		if ( string.IsNullOrEmpty( modelName ) )
+			return $"submodel {modelIndex}";
+
+		// Strip .smd extension if present
+		var name = modelName;
+		if ( name.EndsWith( ".smd", StringComparison.OrdinalIgnoreCase ) )
+			name = name.Substring( 0, name.Length - 4 );
+
+		return name;
 	}
 
 	/// <summary>
@@ -283,7 +426,8 @@ public static class SourceModelLoader
 		VvdVertex[] vertices,
 		VvdTangent[] tangents,
 		Material material,
-		int bodyPartVertexIndexStart )
+		int bodyPartVertexIndexStart,
+		string meshName )
 	{
 		var meshVertices = new List<SkinnedVertex>();
 		var meshIndices = new List<int>();
@@ -432,13 +576,53 @@ public static class SourceModelLoader
 			return null;
 		}
 
-		// Create s&box mesh
-		var mesh = new Mesh( material );
+		// Create s&box mesh with meaningful name for body group display
+		var mesh = new Mesh( meshName, material );
 		mesh.Bounds = bounds;
 		mesh.CreateVertexBuffer<SkinnedVertex>( meshVertices.Count, SkinnedVertex.Layout, meshVertices.ToArray() );
 		mesh.CreateIndexBuffer( meshIndices.Count, meshIndices.ToArray() );
 
 		return mesh;
+	}
+
+	/// <summary>
+	/// Create an empty/invisible mesh for registering empty body group choices.
+	/// This creates a degenerate triangle that won't render but allows the choice to exist.
+	/// </summary>
+	private static Mesh CreateEmptyMesh( string name )
+	{
+		try
+		{
+			var mesh = new Mesh( name, DefaultMaterial );
+			
+			// Create a single degenerate triangle at origin (all vertices at same point)
+			// This won't render anything visible but registers the mesh
+			var vertices = new SkinnedVertex[3];
+			for ( int i = 0; i < 3; i++ )
+			{
+				vertices[i] = new SkinnedVertex
+				{
+					Position = Vector3.Zero,
+					Normal = Vector3.Up,
+					Tangent = Vector3.Forward,
+					TexCoord = Vector2.Zero,
+					BlendIndices = new Color32( 0, 0, 0, 0 ),
+					BlendWeights = new Color32( 255, 0, 0, 0 )
+				};
+			}
+			
+			var indices = new int[] { 0, 1, 2 };
+			
+			mesh.Bounds = new BBox( Vector3.Zero, Vector3.One );
+			mesh.CreateVertexBuffer<SkinnedVertex>( 3, SkinnedVertex.Layout, vertices );
+			mesh.CreateIndexBuffer( 3, indices );
+			
+			return mesh;
+		}
+		catch
+		{
+			return null;
+		}
 	}
 
 	/// <summary>
