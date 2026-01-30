@@ -12,8 +12,8 @@ public partial class GModMount : BaseGameMount
 
 	const long AppId = 4000;
 
-	readonly List<VpkArchive> _vpkArchives = [];
-	readonly List<GmaArchive> _gmaArchives = [];
+	readonly List<VpkArchive> _vpkArchives = new List<VpkArchive>();
+	readonly List<GmaArchive> _gmaArchives = new List<GmaArchive>();
 	string _gmodPath;
 	string _workshopPath;
 
@@ -46,12 +46,12 @@ public partial class GModMount : BaseGameMount
 		// - garrysmod/ (main game content)
 		// - sourceengine/ (HL2, CSS content)
 		// - platform/ (shared Valve content)
-		string[] searchDirs =
-		[
+		string[] searchDirs = new string[]
+		{
 			Path.Combine( _gmodPath, "garrysmod" ),
 			Path.Combine( _gmodPath, "sourceengine" ),
 			Path.Combine( _gmodPath, "platform" ),
-		];
+		};
 
 		// Load VPK archives
 		foreach ( var searchDir in searchDirs )

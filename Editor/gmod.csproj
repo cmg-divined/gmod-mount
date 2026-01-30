@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Sandbox.Mounting.gmod</AssemblyName>
+    <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
+    <TargetFramework>netcoreapp10.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+
+  <!-- s&box installation path - SET THIS TO YOUR S&BOX INSTALL LOCATION -->
+  <PropertyGroup>
+    <!-- Pass via command line: dotnet build -p:SboxPath="C:\path\to\sbox" -->
+    <SboxPath Condition="'$(SboxPath)' == ''">D:\SteamLibrary\steamapps\common\sbox</SboxPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="Sandbox.System">
+      <HintPath>$(SboxPath)\bin\managed\Sandbox.System.dll</HintPath>
+    </Reference>
+    <Reference Include="Sandbox.Mounting">
+      <HintPath>$(SboxPath)\bin\managed\Sandbox.Mounting.dll</HintPath>
+    </Reference>
+    <Reference Include="Sandbox.Engine">
+      <HintPath>$(SboxPath)\bin\managed\Sandbox.Engine.dll</HintPath>
+    </Reference>
+    <Reference Include="Sandbox.Filesystem">
+      <HintPath>$(SboxPath)\bin\managed\Sandbox.Filesystem.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>

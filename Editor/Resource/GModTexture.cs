@@ -6,10 +6,16 @@ namespace GModMount;
 /// <summary>
 /// Resource loader for Garry's Mod textures (.vtf)
 /// </summary>
-internal class GModTexture( GModMount mount, VpkEntry entry ) : ResourceLoader<GModMount>
+internal class GModTexture : ResourceLoader<GModMount>
 {
-	private readonly GModMount _mount = mount;
-	private readonly VpkEntry _entry = entry;
+	private readonly GModMount _mount;
+	private readonly VpkEntry _entry;
+
+	public GModTexture( GModMount mount, VpkEntry entry )
+	{
+		_mount = mount;
+		_entry = entry;
+	}
 
 	protected override object Load()
 	{

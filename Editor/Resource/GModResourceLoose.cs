@@ -5,11 +5,18 @@ namespace GModMount;
 /// <summary>
 /// Resource loader for loose model files (.mdl)
 /// </summary>
-internal class GModModelLoose( GModMount mount, string filePath, string rootPath ) : ResourceLoader<GModMount>
+internal class GModModelLoose : ResourceLoader<GModMount>
 {
-	private readonly GModMount _mount = mount;
-	private readonly string _filePath = filePath;
-	private readonly string _rootPath = rootPath;
+	private readonly GModMount _mount;
+	private readonly string _filePath;
+	private readonly string _rootPath;
+
+	public GModModelLoose( GModMount mount, string filePath, string rootPath )
+	{
+		_mount = mount;
+		_filePath = filePath;
+		_rootPath = rootPath;
+	}
 
 	protected override object Load()
 	{
@@ -30,7 +37,7 @@ internal class GModModelLoose( GModMount mount, string filePath, string rootPath
 
 			// Read VTX
 			byte[] vtxData = null;
-			string[] vtxExtensions = [ ".dx90.vtx", ".dx80.vtx", ".sw.vtx" ];
+			string[] vtxExtensions = new string[] { ".dx90.vtx", ".dx80.vtx", ".sw.vtx" };
 			foreach ( var ext in vtxExtensions )
 			{
 				var vtxPath = basePath + ext;
@@ -64,10 +71,16 @@ internal class GModModelLoose( GModMount mount, string filePath, string rootPath
 /// <summary>
 /// Resource loader for loose texture files (.vtf)
 /// </summary>
-internal class GModTextureLoose( GModMount mount, string filePath ) : ResourceLoader<GModMount>
+internal class GModTextureLoose : ResourceLoader<GModMount>
 {
-	private readonly GModMount _mount = mount;
-	private readonly string _filePath = filePath;
+	private readonly GModMount _mount;
+	private readonly string _filePath;
+
+	public GModTextureLoose( GModMount mount, string filePath )
+	{
+		_mount = mount;
+		_filePath = filePath;
+	}
 
 	protected override object Load()
 	{
@@ -98,11 +111,18 @@ internal class GModTextureLoose( GModMount mount, string filePath ) : ResourceLo
 /// <summary>
 /// Resource loader for loose material files (.vmt) with pseudo-PBR support.
 /// </summary>
-internal class GModMaterialLoose( GModMount mount, string filePath, string rootPath ) : ResourceLoader<GModMount>
+internal class GModMaterialLoose : ResourceLoader<GModMount>
 {
-	private readonly GModMount _mount = mount;
-	private readonly string _filePath = filePath;
-	private readonly string _rootPath = rootPath;
+	private readonly GModMount _mount;
+	private readonly string _filePath;
+	private readonly string _rootPath;
+
+	public GModMaterialLoose( GModMount mount, string filePath, string rootPath )
+	{
+		_mount = mount;
+		_filePath = filePath;
+		_rootPath = rootPath;
+	}
 
 	private static Texture _defaultNormal;
 	private static Texture _defaultRoughness;
@@ -280,19 +300,20 @@ internal class GModMaterialLoose( GModMount mount, string filePath, string rootP
 					
 					if ( rgba != null )
 					{
-						// MWB encoding: roughness is INVERTED to gloss, then pow(gloss, 2.5)
-						// So normal alpha = pow(1-roughness, 2.5) = pow(gloss, 2.5)
-						// To decode: gloss = pow(normalized, 0.4), roughness = 1 - gloss
+						// MWB encoding: roughness -> invert to gloss -> pow(gloss, 2.5) -> sRGB to Linear
+						// To decode: Linear to sRGB -> pow(x, 0.4) -> gloss -> invert to roughness
 						var roughData = new byte[vtf.Width * vtf.Height * 4];
 						long roughSum = 0;
 						int pixels = vtf.Width * vtf.Height;
 						
 						for ( int i = 0; i < pixels; i++ )
 						{
-							byte encoded = rgba[i * 4 + 3]; // Alpha = pow(gloss, 2.5)
-							float normalized = encoded / 255f;
-							// Decode: pow(x, 0.4) gives gloss, then invert for roughness
-							float gloss = MathF.Pow( normalized, 0.4f );
+							byte encoded = rgba[i * 4 + 3]; // Alpha = linear encoded gloss
+							float linear = encoded / 255f;
+							// Convert linear back to sRGB: pow(x, 1/2.2) ≈ pow(x, 0.4545)
+							float srgb = MathF.Pow( linear, 0.4545f );
+							// Reverse pow(gloss, 2.5): pow(x, 0.4)
+							float gloss = MathF.Pow( srgb, 0.4f );
 							float roughness = 1.0f - gloss;
 							byte roughByte = (byte)Math.Clamp( roughness * 255f, 0f, 255f );
 							roughSum += roughByte;
@@ -460,9 +481,14 @@ internal class GModMaterialLoose( GModMount mount, string filePath, string rootP
 /// <summary>
 /// Resource loader for loose sound files (.wav, .mp3)
 /// </summary>
-internal class GModSoundLoose( string filePath ) : ResourceLoader<GModMount>
+internal class GModSoundLoose : ResourceLoader<GModMount>
 {
-	private readonly string _filePath = filePath;
+	private readonly string _filePath;
+
+	public GModSoundLoose( string filePath )
+	{
+		_filePath = filePath;
+	}
 
 	protected override object Load()
 	{

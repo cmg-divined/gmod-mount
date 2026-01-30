@@ -5,11 +5,18 @@ namespace GModMount;
 /// <summary>
 /// Resource loader for GMA-packaged models (.mdl)
 /// </summary>
-internal class GModModelGma( GModMount mount, GmaArchive archive, GmaEntry entry ) : ResourceLoader<GModMount>
+internal class GModModelGma : ResourceLoader<GModMount>
 {
-	private readonly GModMount _mount = mount;
-	private readonly GmaArchive _archive = archive;
-	private readonly GmaEntry _entry = entry;
+	private readonly GModMount _mount;
+	private readonly GmaArchive _archive;
+	private readonly GmaEntry _entry;
+
+	public GModModelGma( GModMount mount, GmaArchive archive, GmaEntry entry )
+	{
+		_mount = mount;
+		_archive = archive;
+		_entry = entry;
+	}
 
 	protected override object Load()
 	{
@@ -63,11 +70,18 @@ internal class GModModelGma( GModMount mount, GmaArchive archive, GmaEntry entry
 /// <summary>
 /// Resource loader for GMA-packaged textures (.vtf)
 /// </summary>
-internal class GModTextureGma( GModMount mount, GmaArchive archive, GmaEntry entry ) : ResourceLoader<GModMount>
+internal class GModTextureGma : ResourceLoader<GModMount>
 {
-	private readonly GModMount _mount = mount;
-	private readonly GmaArchive _archive = archive;
-	private readonly GmaEntry _entry = entry;
+	private readonly GModMount _mount;
+	private readonly GmaArchive _archive;
+	private readonly GmaEntry _entry;
+
+	public GModTextureGma( GModMount mount, GmaArchive archive, GmaEntry entry )
+	{
+		_mount = mount;
+		_archive = archive;
+		_entry = entry;
+	}
 
 	protected override object Load()
 	{
@@ -98,11 +112,18 @@ internal class GModTextureGma( GModMount mount, GmaArchive archive, GmaEntry ent
 /// <summary>
 /// Resource loader for GMA-packaged materials (.vmt) with pseudo-PBR support.
 /// </summary>
-internal class GModMaterialGma( GModMount mount, GmaArchive archive, GmaEntry entry ) : ResourceLoader<GModMount>
+internal class GModMaterialGma : ResourceLoader<GModMount>
 {
-	private readonly GModMount _mount = mount;
-	private readonly GmaArchive _archive = archive;
-	private readonly GmaEntry _entry = entry;
+	private readonly GModMount _mount;
+	private readonly GmaArchive _archive;
+	private readonly GmaEntry _entry;
+
+	public GModMaterialGma( GModMount mount, GmaArchive archive, GmaEntry entry )
+	{
+		_mount = mount;
+		_archive = archive;
+		_entry = entry;
+	}
 
 	private static Texture _defaultNormal;
 	private static Texture _defaultRoughness;
@@ -275,16 +296,18 @@ internal class GModMaterialGma( GModMount mount, GmaArchive archive, GmaEntry en
 				var rgba = vtf.ConvertToRGBA();
 				if ( rgba != null )
 				{
-					// MWB encoding: roughness is INVERTED to gloss, then pow(gloss, 2.5)
-					// So normal alpha = pow(1-roughness, 2.5) = pow(gloss, 2.5)
-					// To decode: gloss = pow(normalized, 0.4), roughness = 1 - gloss
+					// MWB encoding: roughness -> invert to gloss -> pow(gloss, 2.5) -> sRGB to Linear
+					// To decode: Linear to sRGB -> pow(x, 0.4) -> gloss -> invert to roughness
 					var roughData = new byte[vtf.Width * vtf.Height * 4];
 					int pixels = vtf.Width * vtf.Height;
 					for ( int i = 0; i < pixels; i++ )
 					{
-						byte encoded = rgba[i * 4 + 3]; // Alpha = pow(gloss, 2.5)
-						float normalized = encoded / 255f;
-						float gloss = MathF.Pow( normalized, 0.4f );
+						byte encoded = rgba[i * 4 + 3]; // Alpha = linear encoded gloss
+						float linear = encoded / 255f;
+						// Convert linear back to sRGB: pow(x, 1/2.2) ≈ pow(x, 0.4545)
+						float srgb = MathF.Pow( linear, 0.4545f );
+						// Reverse pow(gloss, 2.5): pow(x, 0.4)
+						float gloss = MathF.Pow( srgb, 0.4f );
 						float roughness = 1.0f - gloss;
 						byte roughByte = (byte)Math.Clamp( roughness * 255f, 0f, 255f );
 						roughData[i * 4 + 0] = roughByte;
@@ -439,11 +462,18 @@ internal class GModMaterialGma( GModMount mount, GmaArchive archive, GmaEntry en
 /// <summary>
 /// Resource loader for GMA-packaged sounds (.wav, .mp3)
 /// </summary>
-internal class GModSoundGma( GModMount mount, GmaArchive archive, GmaEntry entry ) : ResourceLoader<GModMount>
+internal class GModSoundGma : ResourceLoader<GModMount>
 {
-	private readonly GModMount _mount = mount;
-	private readonly GmaArchive _archive = archive;
-	private readonly GmaEntry _entry = entry;
+	private readonly GModMount _mount;
+	private readonly GmaArchive _archive;
+	private readonly GmaEntry _entry;
+
+	public GModSoundGma( GModMount mount, GmaArchive archive, GmaEntry entry )
+	{
+		_mount = mount;
+		_archive = archive;
+		_entry = entry;
+	}
 
 	protected override object Load()
 	{
