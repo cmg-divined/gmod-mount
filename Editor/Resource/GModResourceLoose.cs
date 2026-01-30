@@ -171,7 +171,7 @@ internal class GModMaterialLoose : ResourceLoader<GModMount>
 
 	private Material CreateExoPbrMaterial( string name, ExtractedPbrProperties props )
 	{
-		var material = Material.Create( name, "complex" );
+		var material = Material.Create( name, "shaders/gmod_pbr.shader" );
 		material.Set( "g_tColor", LoadTexture( props.BaseTexturePath, forceOpaqueAlpha: true ) ?? Texture.White );
 
 		Texture roughnessTexture = DefaultRoughness;
@@ -188,14 +188,14 @@ internal class GModMaterialLoose : ResourceLoader<GModMount>
 		}
 
 		material.Set( "g_tRoughness", roughnessTexture );
-		material.Set( "g_tNormal", LoadNormalMap( props.ExoNormalPath ?? props.BumpMapPath, flipGreen: !string.IsNullOrEmpty( props.ExoNormalPath ) ) );
+		material.Set( "g_tNormal", LoadNormalMap( props.ExoNormalPath ?? props.BumpMapPath ) );
 		SetMaterialDefaults( material, 0f );
 		return material;
 	}
 
 	private Material CreateGpbrMaterial( string name, ExtractedPbrProperties props )
 	{
-		var material = Material.Create( name, "complex" );
+		var material = Material.Create( name, "shaders/gmod_pbr.shader" );
 		material.Set( "g_tColor", LoadTexture( props.BaseTexturePath, forceOpaqueAlpha: true ) ?? Texture.White );
 
 		Texture roughnessTexture = DefaultRoughness;
@@ -256,7 +256,7 @@ internal class GModMaterialLoose : ResourceLoader<GModMount>
 						}
 						metallicTexture = CreateTexture( metalData, vtf.Width, vtf.Height );
 						float avgMetallic = (metallicSum / (float)pixels) / 255f;
-						Log.Info( $"    MWB metallic texture created, avg={avgMetallic:F2}" );
+						Log.Info( $"    MWB metallic texture: {vtf.Width}x{vtf.Height}, avg={avgMetallic:F2}" );
 						
 						// Make color texture opaque
 						for ( int i = 3; i < rgba.Length; i += 4 )
@@ -272,12 +272,8 @@ internal class GModMaterialLoose : ResourceLoader<GModMount>
 		}
 		
 		material.Set( "g_tColor", colorTexture );
-		
-		// Set metallic texture
-		if ( metallicTexture != null )
-		{
-			material.Set( "g_tMetalness", metallicTexture );
-		}
+		material.Set( "g_tMetalness", metallicTexture ?? Texture.Black );
+		material.Set( "g_flMetalnessScale", 1f );
 		
 		// MWB PBR: gloss is in normal map alpha - convert to roughness
 		Texture roughnessTexture = DefaultRoughness;
@@ -328,9 +324,12 @@ internal class GModMaterialLoose : ResourceLoader<GModMount>
 						
 						roughnessTexture = CreateTexture( roughData, vtf.Width, vtf.Height );
 						
-						// Make normal map alpha opaque
-						for ( int i = 3; i < rgba.Length; i += 4 )
-							rgba[i] = 255;
+						// Make normal map alpha opaque and flip green channel (DirectX to OpenGL)
+						for ( int i = 0; i < rgba.Length; i += 4 )
+						{
+							rgba[i + 1] = (byte)(255 - rgba[i + 1]); // Flip green
+							rgba[i + 3] = 255; // Opaque alpha
+						}
 						normalTexture = CreateTexture( rgba, vtf.Width, vtf.Height );
 						Log.Info( $"    MWB roughness and normal textures created" );
 					}
@@ -356,54 +355,152 @@ internal class GModMaterialLoose : ResourceLoader<GModMount>
 
 	private Material CreateBftMaterial( string name, ExtractedPbrProperties props )
 	{
-		var material = Material.Create( name, "complex" );
-		material.Set( "g_tColor", LoadTexture( props.BaseTexturePath, forceOpaqueAlpha: true ) ?? Texture.White );
+		var material = Material.Create( name, "shaders/gmod_pbr.shader" );
+		
+		// BFT: metallic is in base texture alpha (with $blendTintByBaseAlpha)
+		Texture colorTexture = Texture.White;
+		Texture metallicTexture = null;
+		
+		if ( !string.IsNullOrEmpty( props.BaseTexturePath ) )
+		{
+			var baseData = LoadTextureRaw( props.BaseTexturePath );
+			if ( baseData != null )
+			{
+				try
+				{
+					var vtf = VtfFile.Load( baseData );
+					var rgba = vtf.ConvertToRGBA( forceOpaqueAlpha: false );
+					if ( rgba != null )
+					{
+						int pixels = vtf.Width * vtf.Height;
+						
+						// Check if alpha channel has meaningful metallic data
+						// If alpha is mostly 255 (opaque), don't use it as metallic
+						long alphaSum = 0;
+						for ( int i = 0; i < pixels; i++ )
+							alphaSum += rgba[i * 4 + 3];
+						float avgAlpha = alphaSum / (float)pixels;
+						
+						// Only extract metallic if alpha varies (not all opaque)
+						if ( avgAlpha < 250f )
+						{
+							var metalData = new byte[pixels * 4];
+							for ( int i = 0; i < pixels; i++ )
+							{
+								byte metal = rgba[i * 4 + 3];
+								metalData[i * 4 + 0] = metal;
+								metalData[i * 4 + 1] = metal;
+								metalData[i * 4 + 2] = metal;
+								metalData[i * 4 + 3] = 255;
+							}
+							metallicTexture = CreateTexture( metalData, vtf.Width, vtf.Height );
+							Log.Info( $"    BFT metallic from alpha: avgAlpha={avgAlpha:F1}" );
+						}
+						else
+						{
+							Log.Info( $"    BFT skipping metallic (alpha is opaque: {avgAlpha:F1})" );
+						}
+						
+						// Make color texture opaque
+						for ( int i = 3; i < rgba.Length; i += 4 )
+							rgba[i] = 255;
+						colorTexture = CreateTexture( rgba, vtf.Width, vtf.Height );
+					}
+				}
+				catch { }
+			}
+		}
+		
+		material.Set( "g_tColor", colorTexture );
+		material.Set( "g_tMetalness", metallicTexture ?? Texture.Black );
+		material.Set( "g_flMetalnessScale", metallicTexture != null ? 1f : 0f );
 
+		// BFT: roughness from exponent red channel with pow(0.28) decode
 		Texture roughnessTexture = DefaultRoughness;
 		if ( !string.IsNullOrEmpty( props.PhongExponentTexturePath ) )
 		{
 			var expData = LoadTextureRaw( props.PhongExponentTexturePath );
 			if ( expData != null )
 			{
-				var vtf = VtfFile.Load( expData );
-				var rgba = vtf.ConvertToRGBA();
-				if ( rgba != null )
-					roughnessTexture = CreateTexture( PbrTextureGenerator.ConvertBftExponentToRoughness( rgba, vtf.Width, vtf.Height ), vtf.Width, vtf.Height );
+				try
+				{
+					var vtf = VtfFile.Load( expData );
+					var rgba = vtf.ConvertToRGBA();
+					if ( rgba != null )
+						roughnessTexture = CreateTexture( PbrTextureGenerator.ConvertBftExponentToRoughness( rgba, vtf.Width, vtf.Height ), vtf.Width, vtf.Height );
+				}
+				catch { }
 			}
 		}
 
 		material.Set( "g_tRoughness", roughnessTexture );
 		material.Set( "g_tNormal", LoadNormalMap( props.BumpMapPath ) );
-		SetMaterialDefaults( material, props.IsBftMetallicLayer ? 0.9f : 0f );
+		material.Set( "g_tAmbientOcclusion", DefaultAo );
+		material.Set( "g_tTintMask", Texture.White );
+		material.Set( "g_tSelfIllumMask", Texture.Black );
+		material.Set( "g_flSelfIllumScale", 0f );
+		material.Set( "g_flRoughnessScaleFactor", 1f );
 		return material;
 	}
 
 	private Material CreateSourceMaterial( string name, ExtractedPbrProperties props )
 	{
-		var material = Material.Create( name, "complex" );
-		material.Set( "g_tColor", LoadTexture( props.BaseTexturePath, forceOpaqueAlpha: !props.IsTranslucent ) ?? Texture.White );
+		// Choose shader based on transparency and culling needs
+		bool needsTranslucency = props.IsTranslucent || props.IsAdditive;
+		string shaderPath = GetShaderPath( needsTranslucency, props.IsNoCull );
+		var material = Material.Create( name, shaderPath );
+		
+		// Preserve alpha for alpha test, translucent, and additive materials
+		bool needsAlpha = props.IsAlphaTest || needsTranslucency;
+		if ( props.IsTranslucent )
+			Log.Info( $"    Translucent material (using translucent shader)" );
+		if ( props.IsAlphaTest )
+			Log.Info( $"    AlphaTest material: ref={props.AlphaTestReference}" );
+		if ( props.IsAdditive )
+			Log.Info( $"    Additive material (using translucent shader)" );
+		if ( props.IsNoCull )
+			Log.Info( $"    NoCull material (using twosided shader)" );
+		
+		var colorTexture = LoadTexture( props.BaseTexturePath, forceOpaqueAlpha: !needsAlpha );
+		material.Set( "g_tColor", colorTexture ?? Texture.White );
 		material.Set( "g_tNormal", LoadNormalMap( props.BumpMapPath ) );
 		material.Set( "g_tRoughness", DefaultRoughness );
-		material.Set( "g_flMetalness", props.Metallic );
+		material.Set( "g_tMetalness", Texture.Black );
+		material.Set( "g_flMetalnessScale", props.Metallic );
 		material.Set( "g_flRoughnessScaleFactor", props.Roughness );
 		material.Set( "g_tAmbientOcclusion", DefaultAo );
-		material.Set( "g_tTintMask", Texture.White );
-		material.Set( "g_tSelfIllumMask", props.IsSelfIllum ? Texture.White : Texture.Black );
-		material.Set( "g_flSelfIllumScale", props.IsSelfIllum ? 1f : 0f );
+		
+		// Alpha test (only for opaque shader)
+		if ( props.IsAlphaTest && !needsTranslucency )
+			material.Set( "g_flAlphaTestReference", props.AlphaTestReference );
+		
+		// Translucent or additive - set opacity multiplier
+		if ( needsTranslucency )
+			material.Set( "g_flOpacity", props.Alpha );
+		
 		return material;
+	}
+
+	private static string GetShaderPath( bool translucent, bool noCull )
+	{
+		if ( translucent && noCull )
+			return "shaders/gmod_pbr_translucent_twosided.shader";
+		if ( translucent )
+			return "shaders/gmod_pbr_translucent.shader";
+		if ( noCull )
+			return "shaders/gmod_pbr_twosided.shader";
+		return "shaders/gmod_pbr.shader";
 	}
 
 	private void SetMaterialDefaults( Material material, float metalness )
 	{
-		material.Set( "g_flMetalness", metalness );
+		material.Set( "g_tMetalness", Texture.Black );
+		material.Set( "g_flMetalnessScale", metalness );
 		material.Set( "g_flRoughnessScaleFactor", 1f );
 		material.Set( "g_tAmbientOcclusion", DefaultAo );
-		material.Set( "g_tTintMask", Texture.White );
-		material.Set( "g_tSelfIllumMask", Texture.Black );
-		material.Set( "g_flSelfIllumScale", 0f );
 	}
 
-	private Texture LoadNormalMap( string path, bool flipGreen = false )
+	private Texture LoadNormalMap( string path, bool flipGreen = true )
 	{
 		if ( string.IsNullOrEmpty( path ) || path.Contains( "null", StringComparison.OrdinalIgnoreCase ) )
 			return DefaultNormal;
@@ -419,8 +516,12 @@ internal class GModMaterialLoose : ResourceLoader<GModMount>
 			if ( rgba == null )
 				return DefaultNormal;
 
+			// Flip green channel: Source uses DirectX convention, s&box uses OpenGL
 			if ( flipGreen )
-				rgba = PbrTextureGenerator.FlipNormalMapGreen( rgba, vtf.Width, vtf.Height );
+			{
+				for ( int i = 0; i < rgba.Length; i += 4 )
+					rgba[i + 1] = (byte)(255 - rgba[i + 1]);
+			}
 
 			return CreateTexture( rgba, vtf.Width, vtf.Height );
 		}
@@ -460,6 +561,44 @@ internal class GModMaterialLoose : ResourceLoader<GModMount>
 			var rgbaData = vtf.ConvertToRGBA( forceOpaqueAlpha );
 			if ( rgbaData == null )
 				return null;
+
+			return CreateTexture( rgbaData, vtf.Width, vtf.Height );
+		}
+		catch
+		{
+			return null;
+		}
+	}
+
+	private Texture LoadTextureWithAlphaDebug( string texturePath, bool forceOpaqueAlpha = false, bool logAlpha = false )
+	{
+		var data = LoadTextureRaw( texturePath );
+		if ( data == null )
+			return null;
+
+		try
+		{
+			var vtf = VtfFile.Load( data );
+			var rgbaData = vtf.ConvertToRGBA( forceOpaqueAlpha );
+			if ( rgbaData == null )
+				return null;
+
+			if ( logAlpha )
+			{
+				// Calculate average alpha value
+				float totalAlpha = 0;
+				int minAlpha = 255, maxAlpha = 0;
+				int pixelCount = vtf.Width * vtf.Height;
+				for ( int i = 0; i < pixelCount; i++ )
+				{
+					int alpha = rgbaData[i * 4 + 3];
+					totalAlpha += alpha;
+					if ( alpha < minAlpha ) minAlpha = alpha;
+					if ( alpha > maxAlpha ) maxAlpha = alpha;
+				}
+				float avgAlpha = totalAlpha / pixelCount;
+				Log.Info( $"    Texture '{texturePath}' alpha: avg={avgAlpha:F1}, min={minAlpha}, max={maxAlpha}" );
+			}
 
 			return CreateTexture( rgbaData, vtf.Width, vtf.Height );
 		}

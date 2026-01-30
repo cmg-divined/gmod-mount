@@ -55,6 +55,7 @@ public class VmtFile
 	{
 		if ( Parameters.TryGetValue( key, out var value ) )
 		{
+			value = value.Trim();
 			return value == "1" || value.Equals( "true", StringComparison.OrdinalIgnoreCase );
 		}
 		return defaultValue;

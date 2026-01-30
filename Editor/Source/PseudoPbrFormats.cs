@@ -1,3 +1,5 @@
+using GModMount;
+
 namespace GModMount.Source;
 
 /// <summary>
@@ -64,6 +66,13 @@ public class ExtractedPbrProperties
 	public bool IsSSBump { get; set; }
 	public bool HasAlphaMetallic { get; set; } // BFT: metallic stored in base texture alpha
 	
+	// Alpha/transparency
+	public bool IsAlphaTest { get; set; }
+	public float AlphaTestReference { get; set; } = 0.5f;
+	public float Alpha { get; set; } = 1f;
+	public bool IsAdditive { get; set; }
+	public bool IsNoCull { get; set; }
+	
 	// BFT specific
 	public bool IsBftMetallicLayer { get; set; }
 	public bool IsBftDiffuseLayer { get; set; }
@@ -80,6 +89,20 @@ public static class PseudoPbrFormats
 	/// </summary>
 	public static PbrFormat DetectFormat( VmtFile vmt )
 	{
+		// Force MWB processing if setting is enabled (takes priority)
+		if ( GModSettings.ForceMwbProcessing )
+		{
+			Log.Info( $"ForceMwbProcessing is ON - forcing MWBPBR format" );
+			return PbrFormat.MWBPBR;
+		}
+		
+		// Force BFT processing if setting is enabled
+		if ( GModSettings.ForceBftProcessing )
+		{
+			Log.Info( $"ForceBftProcessing is ON - forcing BFTPseudoPBR format" );
+			return PbrFormat.BFTPseudoPBR;
+		}
+		
 		var shader = vmt.Shader?.ToLowerInvariant() ?? "";
 		
 		// Check for ExoPBR first (most specific)
@@ -213,7 +236,20 @@ public static class PseudoPbrFormats
 		props.IsTranslucent = vmt.Translucent;
 		props.IsSelfIllum = vmt.GetBool( "$selfillum" );
 		props.IsSSBump = vmt.GetBool( "$ssbump" );
+		props.IsAlphaTest = vmt.GetBool( "$alphatest" );
+		props.AlphaTestReference = vmt.GetFloat( "$alphatestreference", 0.5f );
+		props.Alpha = vmt.GetFloat( "$alpha", 1f );
+		props.IsAdditive = vmt.GetBool( "$additive" );
+		props.IsNoCull = vmt.GetBool( "$nocull" );
 		props.HasPhong = vmt.GetBool( "$phong" );
+		
+		// Debug: log nocull detection
+		if ( props.IsNoCull )
+			Log.Info( $"    Detected $nocull in VMT" );
+		
+		// Debug: check if nocull key exists
+		if ( vmt.Parameters.ContainsKey( "$nocull" ) )
+			Log.Info( $"    VMT has $nocull key = '{vmt.Parameters["$nocull"]}'" );
 		props.HasEnvMap = !string.IsNullOrEmpty( vmt.EnvMap );
 		props.PhongExponent = vmt.GetFloat( "$phongexponent", 10f );
 		props.PhongBoost = vmt.GetFloat( "$phongboost", 1f );
@@ -418,13 +454,16 @@ public static class PseudoPbrFormats
 	
 	/// <summary>
 	/// Convert BFT exponent texture value to roughness.
-	/// BFT uses simple linear encoding: 255 = smooth, 0 = rough.
+	/// BFT encoding: stored = pow(gloss, 1/0.28) ≈ pow(gloss, 3.57)
+	/// Decoding: gloss = pow(stored, 0.28), roughness = 1 - gloss
 	/// </summary>
 	public static float BftExponentToRoughness( byte expValue )
 	{
-		// Normalize and apply inverse gamma
+		// Normalize
 		float normalized = expValue / 255f;
-		float gloss = MathF.Pow( normalized, 0.24f );
+		// BFT uses Photoshop Levels with input mid 0.28
+		// This means stored = pow(gloss, 1/0.28), so to decode: gloss = pow(stored, 0.28)
+		float gloss = MathF.Pow( normalized, 0.28f );
 		float roughness = 1f - gloss;
 		return Math.Clamp( roughness, 0.04f, 1f );
 	}

@@ -130,7 +130,7 @@ internal class GModMaterial : ResourceLoader<GModMount>
 	/// </summary>
 	private Material CreateExoPbrMaterial( string name, ExtractedPbrProperties props )
 	{
-		var material = Material.Create( name, "complex" );
+		var material = Material.Create( name, "shaders/gmod_pbr.shader" );
 		
 		// Load base color texture
 		var colorTexture = LoadTexture( props.BaseTexturePath, forceOpaqueAlpha: true ) ?? Texture.White;
@@ -164,8 +164,9 @@ internal class GModMaterial : ResourceLoader<GModMount>
 		}
 		
 		material.Set( "g_tRoughness", roughnessTexture );
+		material.Set( "g_tMetalness", metallicTexture );
+		material.Set( "g_flMetalnessScale", 1f );
 		material.Set( "g_tAmbientOcclusion", aoTexture );
-		material.Set( "g_flMetalness", 0f ); // Using texture instead
 		
 		// Load normal map (ExoPBR uses DirectX Y- format, need to flip green)
 		Texture normalTexture = DefaultNormal;
@@ -219,7 +220,7 @@ internal class GModMaterial : ResourceLoader<GModMount>
 	/// </summary>
 	private Material CreateGpbrMaterial( string name, ExtractedPbrProperties props )
 	{
-		var material = Material.Create( name, "complex" );
+		var material = Material.Create( name, "shaders/gmod_pbr.shader" );
 		
 		// Load base color texture
 		var colorTexture = LoadTexture( props.BaseTexturePath, forceOpaqueAlpha: true ) ?? Texture.White;
@@ -254,8 +255,9 @@ internal class GModMaterial : ResourceLoader<GModMount>
 		}
 		
 		material.Set( "g_tRoughness", roughnessTexture );
+		material.Set( "g_tMetalness", metallicTexture );
+		material.Set( "g_flMetalnessScale", 1f );
 		material.Set( "g_tAmbientOcclusion", aoTexture );
-		material.Set( "g_flMetalness", 0f );
 		
 		// Load normal map
 		var normalTexture = LoadNormalMap( props.BumpMapPath, props.IsSSBump );
@@ -332,12 +334,8 @@ internal class GModMaterial : ResourceLoader<GModMount>
 		}
 		
 		material.Set( "g_tColor", colorTexture );
-		
-		// Set metallic texture
-		if ( metallicTexture != null )
-		{
-			material.Set( "g_tMetalness", metallicTexture );
-		}
+		material.Set( "g_tMetalness", metallicTexture ?? Texture.Black );
+		material.Set( "g_flMetalnessScale", 1f );
 		
 		// MWB PBR: gloss is in normal map alpha - convert to roughness
 		Texture roughnessTexture = DefaultRoughness;
@@ -373,9 +371,12 @@ internal class GModMaterial : ResourceLoader<GModMount>
 					}
 					roughnessTexture = CreateTexture( roughData, vtf.Width, vtf.Height );
 					
-					// Make normal map alpha opaque
-					for ( int i = 3; i < rgba.Length; i += 4 )
-						rgba[i] = 255;
+					// Make normal map alpha opaque and flip green channel (DirectX to OpenGL)
+					for ( int i = 0; i < rgba.Length; i += 4 )
+					{
+						rgba[i + 1] = (byte)(255 - rgba[i + 1]); // Flip green
+						rgba[i + 3] = 255; // Opaque alpha
+					}
 					normalTexture = CreateTexture( rgba, vtf.Width, vtf.Height );
 				}
 			}
@@ -396,76 +397,84 @@ internal class GModMaterial : ResourceLoader<GModMount>
 
 	/// <summary>
 	/// Create material from BlueFlyTrap PseudoPBR format.
-	/// BFT uses linear roughness encoding in exponent texture, metallic in base alpha.
+	/// BFT uses pow(0.28) roughness encoding in exponent texture, metallic in base alpha.
 	/// </summary>
 	private Material CreateBftMaterial( string name, ExtractedPbrProperties props )
 	{
-		var material = Material.Create( name, "complex" );
+		var material = Material.Create( name, "shaders/gmod_pbr.shader" );
 		
-		// Load base color texture
-		// For BFT, we need the alpha channel for metallic extraction
+		// BFT: metallic is in base texture alpha (with $blendTintByBaseAlpha)
 		Texture colorTexture = Texture.White;
-		Texture metallicTexture = DefaultMetallic;
+		Texture metallicTexture = null;
 		
 		if ( !string.IsNullOrEmpty( props.BaseTexturePath ) )
 		{
 			var baseData = LoadTextureRaw( props.BaseTexturePath );
 			if ( baseData != null )
 			{
-				var vtf = VtfFile.Load( baseData );
-				var rgba = vtf.ConvertToRGBA( forceOpaqueAlpha: false ); // Keep alpha!
-				
-				if ( rgba != null )
+				try
 				{
-					// Extract metallic from alpha channel if this is a BFT diffuse layer
-					if ( props.HasAlphaMetallic )
+					var vtf = VtfFile.Load( baseData );
+					var rgba = vtf.ConvertToRGBA( forceOpaqueAlpha: false );
+					if ( rgba != null )
 					{
-						var metalData = PbrTextureGenerator.ExtractMetallicFromAlpha( rgba, vtf.Width, vtf.Height );
-						if ( metalData != null )
+						int pixels = vtf.Width * vtf.Height;
+						
+						// Check if alpha channel has meaningful metallic data
+						long alphaSum = 0;
+						for ( int i = 0; i < pixels; i++ )
+							alphaSum += rgba[i * 4 + 3];
+						float avgAlpha = alphaSum / (float)pixels;
+						
+						// Only extract metallic if alpha varies (not all opaque)
+						if ( avgAlpha < 250f )
 						{
+							var metalData = new byte[pixels * 4];
+							for ( int i = 0; i < pixels; i++ )
+							{
+								byte metal = rgba[i * 4 + 3];
+								metalData[i * 4 + 0] = metal;
+								metalData[i * 4 + 1] = metal;
+								metalData[i * 4 + 2] = metal;
+								metalData[i * 4 + 3] = 255;
+							}
 							metallicTexture = CreateTexture( metalData, vtf.Width, vtf.Height );
 						}
+						
+						// Make color texture opaque
+						for ( int i = 3; i < rgba.Length; i += 4 )
+							rgba[i] = 255;
+						colorTexture = CreateTexture( rgba, vtf.Width, vtf.Height );
 					}
-					
-					// Create color texture (with alpha set to 255 for rendering)
-					for ( int i = 3; i < rgba.Length; i += 4 )
-						rgba[i] = 255;
-					
-					colorTexture = CreateTexture( rgba, vtf.Width, vtf.Height );
 				}
+				catch { }
 			}
 		}
 		
 		material.Set( "g_tColor", colorTexture );
-		material.Set( "g_flMetalness", props.IsBftMetallicLayer ? 0.9f : 0f );
+		material.Set( "g_tMetalness", metallicTexture ?? Texture.Black );
+		material.Set( "g_flMetalnessScale", metallicTexture != null ? 1f : 0f );
 		
-		// Load and process exponent texture for roughness
+		// BFT: roughness from exponent red channel with pow(0.28) decode
 		Texture roughnessTexture = DefaultRoughness;
-		
 		if ( !string.IsNullOrEmpty( props.PhongExponentTexturePath ) )
 		{
 			var expData = LoadTextureRaw( props.PhongExponentTexturePath );
 			if ( expData != null )
 			{
-				var vtf = VtfFile.Load( expData );
-				var rgba = vtf.ConvertToRGBA();
-				
-				if ( rgba != null )
+				try
 				{
-					// BFT: simple linear encoding in red channel
-					var roughData = PbrTextureGenerator.ConvertBftExponentToRoughness( rgba, vtf.Width, vtf.Height );
-					roughnessTexture = CreateTexture( roughData, vtf.Width, vtf.Height );
+					var vtf = VtfFile.Load( expData );
+					var rgba = vtf.ConvertToRGBA();
+					if ( rgba != null )
+						roughnessTexture = CreateTexture( PbrTextureGenerator.ConvertBftExponentToRoughness( rgba, vtf.Width, vtf.Height ), vtf.Width, vtf.Height );
 				}
+				catch { }
 			}
 		}
 		
 		material.Set( "g_tRoughness", roughnessTexture );
-		
-		// Load normal map
-		var normalTexture = LoadNormalMap( props.BumpMapPath, props.IsSSBump );
-		material.Set( "g_tNormal", normalTexture );
-		
-		// Set defaults for other textures
+		material.Set( "g_tNormal", LoadNormalMap( props.BumpMapPath, props.IsSSBump ) );
 		material.Set( "g_tAmbientOcclusion", DefaultAo );
 		material.Set( "g_tTintMask", Texture.White );
 		material.Set( "g_tSelfIllumMask", Texture.Black );
@@ -481,11 +490,14 @@ internal class GModMaterial : ResourceLoader<GModMount>
 	/// </summary>
 	private Material CreateSourceMaterial( string name, ExtractedPbrProperties props )
 	{
-		var material = Material.Create( name, "complex" );
+		// Choose shader based on transparency and culling needs
+		bool needsTranslucency = props.IsTranslucent || props.IsAdditive;
+		string shaderPath = GetShaderPath( needsTranslucency, props.IsNoCull );
+		var material = Material.Create( name, shaderPath );
 		
-		// Load base color texture
-		bool isTransparent = props.IsTranslucent;
-		var colorTexture = LoadTexture( props.BaseTexturePath, forceOpaqueAlpha: !isTransparent ) ?? Texture.White;
+		// Load base color texture - preserve alpha for alpha test, translucent, and additive materials
+		bool needsAlpha = props.IsAlphaTest || needsTranslucency;
+		var colorTexture = LoadTexture( props.BaseTexturePath, forceOpaqueAlpha: !needsAlpha ) ?? Texture.White;
 		material.Set( "g_tColor", colorTexture );
 		
 		// Load normal map
@@ -537,45 +549,65 @@ internal class GModMaterial : ResourceLoader<GModMount>
 		}
 		
 		material.Set( "g_tRoughness", roughnessTexture );
-		
-		// Set calculated PBR values
-		material.Set( "g_flMetalness", props.Metallic );
+		material.Set( "g_tMetalness", Texture.Black );
+		material.Set( "g_flMetalnessScale", props.Metallic );
 		material.Set( "g_flRoughnessScaleFactor", props.Roughness );
-		
-		// Set defaults for other textures
 		material.Set( "g_tAmbientOcclusion", DefaultAo );
-		material.Set( "g_tTintMask", Texture.White );
 		
-		// Handle self-illumination
-		if ( props.IsSelfIllum )
-		{
-			material.Set( "g_tSelfIllumMask", Texture.White );
-			material.Set( "g_flSelfIllumScale", 1f );
-		}
-		else
-		{
-			material.Set( "g_tSelfIllumMask", Texture.Black );
-			material.Set( "g_flSelfIllumScale", 0f );
-		}
+		// Alpha test (only for opaque shader)
+		if ( props.IsAlphaTest && !needsTranslucency )
+			material.Set( "g_flAlphaTestReference", props.AlphaTestReference );
+		
+		// Translucent or additive - set opacity multiplier
+		if ( needsTranslucency )
+			material.Set( "g_flOpacity", props.Alpha );
 		
 		return material;
 	}
 
+	private static string GetShaderPath( bool translucent, bool noCull )
+	{
+		if ( translucent && noCull )
+			return "shaders/gmod_pbr_translucent_twosided.shader";
+		if ( translucent )
+			return "shaders/gmod_pbr_translucent.shader";
+		if ( noCull )
+			return "shaders/gmod_pbr_twosided.shader";
+		return "shaders/gmod_pbr.shader";
+	}
+
 	/// <summary>
-	/// Load a normal map, handling SSBump conversion if needed.
+	/// Load a normal map, flipping green channel for DirectX to OpenGL conversion.
+	/// Source Engine uses DirectX convention (Y+ down), s&box uses OpenGL (Y+ up).
 	/// </summary>
 	private Texture LoadNormalMap( string path, bool isSSBump )
 	{
 		if ( string.IsNullOrEmpty( path ) || path.Contains( "null", StringComparison.OrdinalIgnoreCase ) )
 			return DefaultNormal;
 
-		var texture = LoadTexture( path );
-		if ( texture == null || !texture.IsValid() )
+		var data = LoadTextureRaw( path );
+		if ( data == null )
 			return DefaultNormal;
 
-		// Note: SSBump conversion would require additional processing
-		// For now, just use the texture as-is (most normal maps work fine)
-		return texture;
+		try
+		{
+			var vtf = VtfFile.Load( data );
+			var rgba = vtf.ConvertToRGBA();
+			if ( rgba == null )
+				return DefaultNormal;
+
+			// Flip green channel: Source uses DirectX convention, s&box uses OpenGL
+			// DirectX: Y+ points down (green 128=flat, >128=down, <128=up)
+			// OpenGL: Y+ points up (opposite)
+			for ( int i = 0; i < rgba.Length; i += 4 )
+				rgba[i + 1] = (byte)(255 - rgba[i + 1]); // Flip green channel
+
+			return CreateTexture( rgba, vtf.Width, vtf.Height );
+		}
+		catch
+		{
+			return DefaultNormal;
+		}
 	}
 
 	/// <summary>

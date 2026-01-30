@@ -284,6 +284,8 @@ public static class SourceModelLoader
 		// Get vertices for this LOD
 		var vertices = vvd.GetVerticesForLod( lod );
 		var tangents = vvd.Tangents;
+		
+		Log.Info( $"AddMeshes: VVD has {vertices.Length} vertices for LOD {lod}, VTX has {vtx.BodyParts.Count} body parts" );
 
 		// Track cumulative vertex count across all models (NOT mdlModel.VertexIndex!)
 		// This is how Crowbar calculates bodyPartVertexIndexStart
@@ -433,6 +435,9 @@ public static class SourceModelLoader
 		var meshIndices = new List<int>();
 		var bounds = new BBox();
 
+		int totalSkippedTriangles = 0;
+		int totalTriangles = 0;
+		
 		foreach ( var stripGroup in vtxMesh.StripGroups )
 		{
 			int baseVertex = meshVertices.Count;
@@ -448,7 +453,7 @@ public static class SourceModelLoader
 
 				if ( vvdIndex < 0 || vvdIndex >= vertices.Length )
 				{
-					// Add a default vertex to maintain index alignment
+					// Add a default vertex to maintain index alignment (will create degenerate triangles)
 					meshVertices.Add( new SkinnedVertex
 					{
 						Position = Vector3.Zero,
@@ -504,8 +509,17 @@ public static class SourceModelLoader
 			// Add indices from each strip
 			// Note: We reverse the winding order because the coordinate system conversion
 			// includes a reflection (-X component) which inverts triangle facing
+			int indicesLength = stripGroup.Indices?.Length ?? 0;
+			
 			foreach ( var strip in stripGroup.Strips )
 			{
+				// Validate strip offset is within bounds
+				if ( strip.IndexOffset < 0 || strip.IndexOffset >= indicesLength )
+				{
+					Log.Warning( $"BuildMesh: Strip IndexOffset {strip.IndexOffset} out of bounds (indices length: {indicesLength})" );
+					continue;
+				}
+				
 				if ( strip.IsTriList )
 				{
 					// Triangle list - reverse winding (0,1,2) -> (0,2,1)
@@ -515,16 +529,26 @@ public static class SourceModelLoader
 						int idx1 = strip.IndexOffset + i + 1;
 						int idx2 = strip.IndexOffset + i + 2;
 						
-						if ( idx2 >= stripGroup.Indices.Length )
+						// Validate all indices are in bounds
+						if ( idx0 < 0 || idx0 >= indicesLength ||
+						     idx1 < 0 || idx1 >= indicesLength ||
+						     idx2 < 0 || idx2 >= indicesLength )
 							continue;
 						
 						int v0 = stripGroup.Indices[idx0];
 						int v1 = stripGroup.Indices[idx1];
 						int v2 = stripGroup.Indices[idx2];
 						
+						totalTriangles++;
+						
 						// Validate vertex indices are within the strip group's vertex range
-						if ( v0 >= stripGroupVertexCount || v1 >= stripGroupVertexCount || v2 >= stripGroupVertexCount )
+						if ( v0 < 0 || v0 >= stripGroupVertexCount ||
+						     v1 < 0 || v1 >= stripGroupVertexCount ||
+						     v2 < 0 || v2 >= stripGroupVertexCount )
+						{
+							totalSkippedTriangles++;
 							continue;
+						}
 						
 						meshIndices.Add( baseVertex + v0 );
 						meshIndices.Add( baseVertex + v2 );
@@ -540,16 +564,26 @@ public static class SourceModelLoader
 						int idx1 = strip.IndexOffset + i + 1;
 						int idx2 = strip.IndexOffset + i + 2;
 
-						if ( idx2 >= stripGroup.Indices.Length )
+						// Validate all indices are in bounds
+						if ( idx0 < 0 || idx0 >= indicesLength ||
+						     idx1 < 0 || idx1 >= indicesLength ||
+						     idx2 < 0 || idx2 >= indicesLength )
 							continue;
 						
 						int v0 = stripGroup.Indices[idx0];
 						int v1 = stripGroup.Indices[idx1];
 						int v2 = stripGroup.Indices[idx2];
 						
+						totalTriangles++;
+						
 						// Validate vertex indices are within the strip group's vertex range
-						if ( v0 >= stripGroupVertexCount || v1 >= stripGroupVertexCount || v2 >= stripGroupVertexCount )
+						if ( v0 < 0 || v0 >= stripGroupVertexCount ||
+						     v1 < 0 || v1 >= stripGroupVertexCount ||
+						     v2 < 0 || v2 >= stripGroupVertexCount )
+						{
+							totalSkippedTriangles++;
 							continue;
+						}
 
 						if ( i % 2 == 0 )
 						{
@@ -576,6 +610,9 @@ public static class SourceModelLoader
 			return null;
 		}
 
+		// Log mesh stats
+		Log.Info( $"BuildMesh '{meshName}': {meshVertices.Count} vertices, {meshIndices.Count / 3} triangles (from {totalTriangles} processed, {totalSkippedTriangles} skipped)" );
+		
 		// Create s&box mesh with meaningful name for body group display
 		var mesh = new Mesh( meshName, material );
 		mesh.Bounds = bounds;

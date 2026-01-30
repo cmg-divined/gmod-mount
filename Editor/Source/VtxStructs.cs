@@ -64,9 +64,28 @@ public struct VtxMesh
 
 /// <summary>
 /// VTX strip group - contains vertices and indices for a portion of a mesh.
+/// NOTE: For MDL v44/v45, use VtxStripGroupV44. For MDL v49+, use this struct.
 /// </summary>
 [StructLayout( LayoutKind.Sequential, Pack = 1 )]
 public struct VtxStripGroup
+{
+	public int VertexCount;
+	public int VertexOffset;
+	public int IndexCount;
+	public int IndexOffset;
+	public int StripCount;
+	public int StripOffset;
+	public byte Flags;
+	// MDL v49+ adds these two fields (except L4D and L4D2)
+	public int TopologyIndexCount;
+	public int TopologyIndexOffset;
+}
+
+/// <summary>
+/// VTX strip group for older models (v44/v45) - does NOT have topology fields.
+/// </summary>
+[StructLayout( LayoutKind.Sequential, Pack = 1 )]
+public struct VtxStripGroupV44
 {
 	public int VertexCount;
 	public int VertexOffset;

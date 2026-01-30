@@ -3,6 +3,25 @@ using GModMount.VPK;
 namespace GModMount;
 
 /// <summary>
+/// Settings for the GMod mount.
+/// </summary>
+public static class GModSettings
+{
+	/// <summary>
+	/// When true, forces all materials to be processed as MWB PBR regardless of detection.
+	/// Useful for content that uses MWB encoding but lacks detection markers.
+	/// </summary>
+	public static bool ForceMwbProcessing { get; set; } = false;
+	
+	/// <summary>
+	/// When true, forces all materials to be processed as BlueFlyTrap PseudoPBR regardless of detection.
+	/// Useful for content that uses BFT encoding but lacks detection markers.
+	/// Note: ForceMwbProcessing takes priority if both are enabled.
+	/// </summary>
+	public static bool ForceBftProcessing { get; set; } = false;
+}
+
+/// <summary>
 /// A mounting implementation for Garry's Mod
 /// </summary>
 public partial class GModMount : BaseGameMount

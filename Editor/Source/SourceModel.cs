@@ -97,7 +97,8 @@ public class SourceModel
 		try
 		{
 			Log.Info( $"SourceModel: Parsing VTX ({vtxData.Length} bytes)..." );
-			model.Vtx = VtxFile.Load( vtxData );
+			// Pass MDL version to VTX parser - v49+ has larger strip group headers
+			model.Vtx = VtxFile.Load( vtxData, model.Mdl.Header.Version );
 			Log.Info( $"SourceModel: VTX parsed - {model.Vtx.BodyParts.Count} bodyparts" );
 		}
 		catch ( Exception ex )

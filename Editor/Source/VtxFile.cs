@@ -12,28 +12,40 @@ public class VtxFile
 	/// <summary>
 	/// Load a VTX file from a byte array.
 	/// </summary>
-	public static VtxFile Load( byte[] data )
+	/// <param name="data">VTX file data</param>
+	/// <param name="mdlVersion">MDL version (affects strip group struct size)</param>
+	public static VtxFile Load( byte[] data, int mdlVersion = 49 )
 	{
 		using var stream = new MemoryStream( data );
 		using var reader = new BinaryReader( stream );
-		return Load( reader );
+		return Load( reader, mdlVersion );
 	}
 
 	/// <summary>
 	/// Load a VTX file from a stream.
 	/// </summary>
-	public static VtxFile Load( Stream stream )
+	/// <param name="stream">VTX stream</param>
+	/// <param name="mdlVersion">MDL version (affects strip group struct size)</param>
+	public static VtxFile Load( Stream stream, int mdlVersion = 49 )
 	{
 		using var reader = new BinaryReader( stream, Encoding.ASCII, leaveOpen: true );
-		return Load( reader );
+		return Load( reader, mdlVersion );
 	}
 
 	/// <summary>
 	/// Load a VTX file from a binary reader.
 	/// </summary>
-	public static VtxFile Load( BinaryReader reader )
+	/// <param name="reader">Binary reader</param>
+	/// <param name="mdlVersion">MDL version (affects strip group struct size)</param>
+	public static VtxFile Load( BinaryReader reader, int mdlVersion = 49 )
 	{
 		var vtx = new VtxFile();
+		
+		// MDL v49+ has extra topology fields in strip groups (8 bytes larger)
+		bool hasTopologyFields = mdlVersion >= 49;
+		int stripGroupSize = hasTopologyFields 
+			? Marshal.SizeOf<VtxStripGroup>() 
+			: Marshal.SizeOf<VtxStripGroupV44>();
 
 		// Read header
 		vtx.Header = reader.ReadStruct<VtxHeader>();
@@ -107,38 +119,64 @@ public class VtxFile
 											for ( int sg = 0; sg < mesh.StripGroupCount; sg++ )
 											{
 												long stripGroupStart = reader.BaseStream.Position;
-												var stripGroup = reader.ReadStruct<VtxStripGroup>();
+												
+												// Read strip group header based on MDL version
+												int vertexCount, vertexOffset, indexCount, indexOffset, stripCount, stripOffset;
+												byte flags;
+												
+												if ( hasTopologyFields )
+												{
+													var stripGroup = reader.ReadStruct<VtxStripGroup>();
+													vertexCount = stripGroup.VertexCount;
+													vertexOffset = stripGroup.VertexOffset;
+													indexCount = stripGroup.IndexCount;
+													indexOffset = stripGroup.IndexOffset;
+													stripCount = stripGroup.StripCount;
+													stripOffset = stripGroup.StripOffset;
+													flags = stripGroup.Flags;
+												}
+												else
+												{
+													var stripGroup = reader.ReadStruct<VtxStripGroupV44>();
+													vertexCount = stripGroup.VertexCount;
+													vertexOffset = stripGroup.VertexOffset;
+													indexCount = stripGroup.IndexCount;
+													indexOffset = stripGroup.IndexOffset;
+													stripCount = stripGroup.StripCount;
+													stripOffset = stripGroup.StripOffset;
+													flags = stripGroup.Flags;
+												}
 
 												var stripGroupData = new VtxStripGroupData
 												{
 													Index = sg,
-													Flags = stripGroup.Flags
+													Flags = flags
 												};
 
 												// Read vertices
-												if ( stripGroup.VertexCount > 0 && stripGroup.VertexOffset != 0 )
+												if ( vertexCount > 0 && vertexOffset != 0 )
 												{
-													reader.BaseStream.Position = stripGroupStart + stripGroup.VertexOffset;
-													stripGroupData.Vertices = reader.ReadStructArray<VtxVertex>( stripGroup.VertexCount );
+													reader.BaseStream.Position = stripGroupStart + vertexOffset;
+													stripGroupData.Vertices = reader.ReadStructArray<VtxVertex>( vertexCount );
 												}
 
 												// Read indices
-												if ( stripGroup.IndexCount > 0 && stripGroup.IndexOffset != 0 )
+												if ( indexCount > 0 && indexOffset != 0 )
 												{
-													reader.BaseStream.Position = stripGroupStart + stripGroup.IndexOffset;
-													stripGroupData.Indices = new ushort[stripGroup.IndexCount];
-													for ( int idx = 0; idx < stripGroup.IndexCount; idx++ )
+													reader.BaseStream.Position = stripGroupStart + indexOffset;
+													stripGroupData.Indices = new ushort[indexCount];
+													for ( int idx = 0; idx < indexCount; idx++ )
 													{
 														stripGroupData.Indices[idx] = reader.ReadUInt16();
 													}
 												}
 
 												// Read strips
-												if ( stripGroup.StripCount > 0 && stripGroup.StripOffset != 0 )
+												if ( stripCount > 0 && stripOffset != 0 )
 												{
-													reader.BaseStream.Position = stripGroupStart + stripGroup.StripOffset;
+													reader.BaseStream.Position = stripGroupStart + stripOffset;
 
-													for ( int s = 0; s < stripGroup.StripCount; s++ )
+													for ( int s = 0; s < stripCount; s++ )
 													{
 														var strip = reader.ReadStruct<VtxStrip>();
 
@@ -157,8 +195,8 @@ public class VtxFile
 
 												meshData.StripGroups.Add( stripGroupData );
 
-												// Move to next strip group
-												reader.BaseStream.Position = stripGroupStart + Marshal.SizeOf<VtxStripGroup>();
+												// Move to next strip group using correct size
+												reader.BaseStream.Position = stripGroupStart + stripGroupSize;
 											}
 										}
 
