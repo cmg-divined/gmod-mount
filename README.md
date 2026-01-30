@@ -44,7 +44,7 @@ mount://garrysmod/models/humans/group01/male_07.vmdl
 
 ## Notes
 
-- Materials are converted to use s&box's PBR shader with metalness=0 and roughness=1 (matte finish). Source engine materials weren't PBR, so this is a reasonable default.
+- Materials are converted to use s&box's PBR shader with metalness=0 and roughness=1. Source engine materials weren't PBR, so this is a reasonable default.
 - Physics hulls are simplified using QEM to keep collision meshes reasonable.
 - Some older or weird models might not work perfectly. If you find something broken, open an issue.
 
