@@ -65,6 +65,9 @@ PS
 	float g_flRoughnessScaleFactor < UiType( Slider ); Default( 1.0 ); Range( 0.0, 2.0 ); UiGroup( "Material,10/31" ); >;
 	float g_flMetalnessScale < UiType( Slider ); Default( 1.0 ); Range( 0.0, 1.0 ); UiGroup( "Material,10/41" ); >;
 	float g_flOpacity < UiType( Slider ); Default( 1.0 ); Range( 0.0, 1.0 ); UiGroup( "Material,10/60" ); >;
+	
+	// Color tinting ($color2 support) - for translucent, simple multiply only
+	float3 g_vColorTint < UiType( Color ); Default3( 1.0, 1.0, 1.0 ); UiGroup( "Material,10/15" ); >;
 
 	float4 MainPs( PixelInput i ) : SV_Target0
 	{
@@ -72,7 +75,7 @@ PS
 		
 		// Sample textures
 		float4 colorSample = g_tColor.Sample( g_sAniso, uv );
-		float3 albedo = colorSample.rgb;
+		float3 albedo = colorSample.rgb * g_vColorTint;
 		float alpha = colorSample.a * g_flOpacity;
 		
 		float3 normal = DecodeNormal( g_tNormal.Sample( g_sAniso, uv ).rgb );

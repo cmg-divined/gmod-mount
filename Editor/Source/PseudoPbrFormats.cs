@@ -20,7 +20,10 @@ public enum PbrFormat
 	MWBPBR,
 	
 	/// <summary>BlueFlyTrap PseudoPBR - linear roughness in exponent, metallic in base alpha</summary>
-	BFTPseudoPBR
+	BFTPseudoPBR,
+	
+	/// <summary>MadIvan18 - roughness in normal map alpha, metalness in exponent red channel</summary>
+	MadIvan18
 }
 
 /// <summary>
@@ -77,6 +80,21 @@ public class ExtractedPbrProperties
 	public bool IsBftMetallicLayer { get; set; }
 	public bool IsBftDiffuseLayer { get; set; }
 	public float[] BftColor2 { get; set; }
+	
+	// Color tinting ($color2 support)
+	public float[] Color2 { get; set; }  // RGB values 0-1
+	public bool BlendTintByBaseAlpha { get; set; }
+	
+	// Eye shader properties (Eyes/EyeRefract)
+	public bool IsEyeShader { get; set; }
+	public string IrisTexturePath { get; set; }
+	public string CorneaTexturePath { get; set; }
+	public string EyeAmbientOcclTexturePath { get; set; }
+	public float EyeDilation { get; set; } = 0.5f;
+	public float EyeParallaxStrength { get; set; } = 0.25f;
+	public float EyeCorneaBumpStrength { get; set; } = 1f;
+	public float EyeGlossiness { get; set; } = 0.5f;
+	public float[] EyeAmbientOcclColor { get; set; }
 }
 
 /// <summary>
@@ -87,7 +105,9 @@ public static class PseudoPbrFormats
 	/// <summary>
 	/// Detect which pseudo-PBR format a VMT file uses.
 	/// </summary>
-	public static PbrFormat DetectFormat( VmtFile vmt )
+	/// <param name="vmt">The parsed VMT file</param>
+	/// <param name="materialPath">Optional material path for path-based detection</param>
+	public static PbrFormat DetectFormat( VmtFile vmt, string materialPath = null )
 	{
 		// Force MWB processing if setting is enabled (takes priority)
 		if ( GModSettings.ForceMwbProcessing )
@@ -101,6 +121,20 @@ public static class PseudoPbrFormats
 		{
 			Log.Info( $"ForceBftProcessing is ON - forcing BFTPseudoPBR format" );
 			return PbrFormat.BFTPseudoPBR;
+		}
+		
+		// Force MadIvan18 processing if setting is enabled
+		if ( GModSettings.ForceMadIvan18Processing )
+		{
+			Log.Info( $"ForceMadIvan18Processing is ON - forcing MadIvan18 format" );
+			return PbrFormat.MadIvan18;
+		}
+		
+		// Path-based detection: MadIvan18 materials
+		if ( !string.IsNullOrEmpty( materialPath ) && 
+		     materialPath.Contains( "MadIvan18", StringComparison.OrdinalIgnoreCase ) )
+		{
+			return PbrFormat.MadIvan18;
 		}
 		
 		var shader = vmt.Shader?.ToLowerInvariant() ?? "";
@@ -221,12 +255,17 @@ public static class PseudoPbrFormats
 	/// <summary>
 	/// Extract PBR properties from a VMT file.
 	/// </summary>
-	public static ExtractedPbrProperties ExtractProperties( VmtFile vmt )
+	/// <summary>
+	/// Extract PBR properties from a VMT file.
+	/// </summary>
+	/// <param name="vmt">The parsed VMT file</param>
+	/// <param name="materialPath">Optional material path for path-based detection</param>
+	public static ExtractedPbrProperties ExtractProperties( VmtFile vmt, string materialPath = null )
 	{
 		var props = new ExtractedPbrProperties();
 		
 		// Detect format first
-		props.Format = DetectFormat( vmt );
+		props.Format = DetectFormat( vmt, materialPath );
 		
 		// Extract common properties
 		props.BaseTexturePath = vmt.BaseTexture;
@@ -261,6 +300,32 @@ public static class PseudoPbrFormats
 		var envTintVec = vmt.GetVector3( "$envmaptint" );
 		if ( envTintVec != default )
 			props.EnvMapTint = new[] { envTintVec.x, envTintVec.y, envTintVec.z };
+		
+		// Parse $color2 for color tinting
+		var color2Vec = vmt.GetVector3( "$color2" );
+		if ( color2Vec != default )
+			props.Color2 = new[] { color2Vec.x, color2Vec.y, color2Vec.z };
+		props.BlendTintByBaseAlpha = vmt.GetBool( "$blendtintbybasealpha" );
+		
+		// Check for eye shader (Eyes or EyeRefract)
+		var shaderLower = vmt.Shader?.ToLowerInvariant() ?? "";
+		if ( shaderLower == "eyes" || shaderLower == "eyes_dx8" || shaderLower == "eyerefract" )
+		{
+			props.IsEyeShader = true;
+			props.IrisTexturePath = vmt.GetString( "$iris" );
+			props.CorneaTexturePath = vmt.GetString( "$corneatexture" );
+			props.EyeAmbientOcclTexturePath = vmt.GetString( "$ambientoccltexture" );
+			props.EyeDilation = vmt.GetFloat( "$dilation", 0.5f );
+			props.EyeParallaxStrength = vmt.GetFloat( "$parallaxstrength", 0.25f );
+			props.EyeCorneaBumpStrength = vmt.GetFloat( "$corneabumpstrength", 1f );
+			props.EyeGlossiness = vmt.GetFloat( "$glossiness", 0.5f );
+			
+			var aoColor = vmt.GetVector3( "$ambientocclcolor" );
+			if ( aoColor != default )
+				props.EyeAmbientOcclColor = new[] { aoColor.x, aoColor.y, aoColor.z };
+			else
+				props.EyeAmbientOcclColor = new[] { 0.33f, 0.33f, 0.33f };
+		}
 		
 		// Extract format-specific properties
 		switch ( props.Format )

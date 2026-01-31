@@ -55,13 +55,21 @@ public static class SourceModelLoader
 	/// <returns>s&box Model</returns>
 	public static Model Convert( SourceModel sourceModel, int lod = 0, int skinFamily = 0, string path = null, GModMount mount = null )
 	{
+		Log.Info( $"=== SourceModelLoader.Convert START === eyeballs={sourceModel.Mdl.Eyeballs?.Count ?? 0}" );
+		
 		var builder = Model.Builder;
 
 		if ( !string.IsNullOrEmpty( path ) )
 			builder.WithName( path );
 
 		// Build base material list (skin 0)
+		Log.Info( $"=== Building material list ===" );
 		var baseMaterials = BuildMaterialList( sourceModel, 0, mount );
+		Log.Info( $"=== Built {baseMaterials.Count} materials, now updating eye materials ===" );
+		
+		// Update eye materials with eyeball data from MDL
+		UpdateEyeMaterials( sourceModel, baseMaterials );
+		Log.Info( $"=== Eye materials updated ===" );
 
 		// Add bones
 		AddBones( builder, sourceModel );
@@ -88,6 +96,107 @@ public static class SourceModelLoader
 		}
 		
 		return model;
+	}
+	
+	/// <summary>
+	/// Update eye materials with eyeball projection data from the MDL.
+	/// </summary>
+	private static void UpdateEyeMaterials( SourceModel model, List<Material> materials )
+	{
+		if ( model.Mdl.Eyeballs == null || model.Mdl.Eyeballs.Count == 0 )
+			return;
+		
+		Log.Info( $"SourceModelLoader: Updating {model.Mdl.Eyeballs.Count} eyeball materials" );
+		
+		// Calculate bone world transforms for eye positioning
+		var boneTransforms = new Transform[model.Mdl.Bones.Count];
+		for ( int i = 0; i < model.Mdl.Bones.Count; i++ )
+		{
+			var bone = model.Mdl.Bones[i];
+			Vector3 position = ConvertPosition( bone.Position );
+			Rotation rotation = ConvertRotation( bone.Quaternion );
+			var localTransform = new Transform( position, rotation, 1f );
+			
+			if ( bone.ParentIndex >= 0 && bone.ParentIndex < i )
+				localTransform = boneTransforms[bone.ParentIndex].ToWorld( localTransform );
+			
+			boneTransforms[i] = localTransform;
+		}
+		
+		foreach ( var eyeball in model.Mdl.Eyeballs )
+		{
+			Log.Info( $"  Processing eyeball '{eyeball.Name}': TextureIndex={eyeball.TextureIndex}, BoneIndex={eyeball.BoneIndex}" );
+			Log.Info( $"    Origin=({eyeball.Origin.x:F3}, {eyeball.Origin.y:F3}, {eyeball.Origin.z:F3}), Radius={eyeball.Radius:F3}, IrisScale={eyeball.IrisScale:F3}" );
+			
+			// Get the material for this eyeball
+			if ( eyeball.TextureIndex < 0 || eyeball.TextureIndex >= materials.Count )
+			{
+				Log.Warning( $"    Eyeball TextureIndex {eyeball.TextureIndex} out of range (materials.Count={materials.Count})" );
+				continue;
+			}
+			
+			var material = materials[eyeball.TextureIndex];
+			if ( material == null || !material.IsValid() )
+			{
+				Log.Warning( $"    Material at index {eyeball.TextureIndex} is null or invalid" );
+				continue;
+			}
+			
+			Log.Info( $"    Using material: {material.Name}" );
+			
+			// Get the bone transform for this eyeball
+			Transform boneTransform = Transform.Zero;
+			if ( eyeball.BoneIndex >= 0 && eyeball.BoneIndex < boneTransforms.Length )
+				boneTransform = boneTransforms[eyeball.BoneIndex];
+			
+			// Convert eye origin from bone-local to world space
+			// The eye origin in MDL is in Source coordinates relative to the bone
+			Vector3 eyeOriginLocal = ConvertPosition( eyeball.Origin );
+			Vector3 eyeOriginWorld = boneTransform.PointToWorld( eyeOriginLocal );
+			
+			// Convert up and forward vectors
+			Vector3 eyeUp = ConvertDirection( eyeball.Up );
+			Vector3 eyeForward = ConvertDirection( eyeball.Forward );
+			
+			// Transform to world space
+			eyeUp = boneTransform.Rotation * eyeUp;
+			eyeForward = boneTransform.Rotation * eyeForward;
+			
+			// Compute left vector (perpendicular to forward and up)
+			Vector3 eyeLeft = Vector3.Cross( eyeUp, eyeForward ).Normal;
+			
+			// Compute iris projection vectors
+			// Scale factor for UV projection based on iris scale and radius
+			float radius = eyeball.Radius * SourceConstants.SCALE;
+			float irisScale = eyeball.IrisScale;
+			float scale = 1.0f / ( radius * irisScale * 2.0f );
+			
+			// Projection U (left direction)
+			Vector4 irisProjectionU = new Vector4(
+				eyeLeft.x * scale,
+				eyeLeft.y * scale,
+				eyeLeft.z * scale,
+				-Vector3.Dot( eyeLeft, eyeOriginWorld ) * scale + 0.5f
+			);
+			
+			// Projection V (up direction)
+			Vector4 irisProjectionV = new Vector4(
+				eyeUp.x * scale,
+				eyeUp.y * scale,
+				eyeUp.z * scale,
+				-Vector3.Dot( eyeUp, eyeOriginWorld ) * scale + 0.5f
+			);
+			
+			// Set material properties
+			material.Set( "g_vEyeOrigin", eyeOriginWorld );
+			material.Set( "g_vIrisProjectionU", irisProjectionU );
+			material.Set( "g_vIrisProjectionV", irisProjectionV );
+			material.Set( "g_flEyeballRadius", radius );
+			
+			Log.Info( $"  Eyeball '{eyeball.Name}': origin={eyeOriginWorld}, radius={radius}, irisScale={irisScale}" );
+			Log.Info( $"    ProjectionU={irisProjectionU}" );
+			Log.Info( $"    ProjectionV={irisProjectionV}" );
+		}
 	}
 
 	/// <summary>
@@ -694,7 +803,7 @@ public static class SourceModelLoader
 	/// s&box: X forward, Y left, Z up
 	/// </summary>
 	[MethodImpl( MethodImplOptions.AggressiveInlining )]
-	private static Vector3 ConvertPosition( Vector3 v )
+	public static Vector3 ConvertPosition( Vector3 v )
 	{
 		return new Vector3( v.y, -v.x, v.z ) * SourceConstants.SCALE;
 	}
@@ -703,7 +812,7 @@ public static class SourceModelLoader
 	/// Convert Source direction vector to s&box coordinate system.
 	/// </summary>
 	[MethodImpl( MethodImplOptions.AggressiveInlining )]
-	private static Vector3 ConvertDirection( Vector3 v )
+	public static Vector3 ConvertDirection( Vector3 v )
 	{
 		return new Vector3( v.y, -v.x, v.z );
 	}
@@ -712,7 +821,7 @@ public static class SourceModelLoader
 	/// Convert Source quaternion to s&box rotation.
 	/// </summary>
 	[MethodImpl( MethodImplOptions.AggressiveInlining )]
-	private static Rotation ConvertRotation( Quaternion q )
+	public static Rotation ConvertRotation( Quaternion q )
 	{
 		// System.Numerics.Quaternion uses uppercase X, Y, Z, W
 		return new Rotation( q.Y, -q.X, q.Z, q.W );

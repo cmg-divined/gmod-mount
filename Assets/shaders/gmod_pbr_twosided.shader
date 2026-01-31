@@ -65,6 +65,10 @@ PS
 	float g_flRoughnessScaleFactor < UiType( Slider ); Default( 1.0 ); Range( 0.0, 2.0 ); UiGroup( "Material,10/31" ); >;
 	float g_flMetalnessScale < UiType( Slider ); Default( 1.0 ); Range( 0.0, 1.0 ); UiGroup( "Material,10/41" ); >;
 	float g_flAlphaTestReference < UiType( Slider ); Default( 0.0 ); Range( 0.0, 1.0 ); UiGroup( "Material,10/60" ); >;
+	
+	// Color tinting ($color2 support)
+	float3 g_vColorTint < UiType( Color ); Default3( 1.0, 1.0, 1.0 ); UiGroup( "Material,10/15" ); >;
+	float g_flBlendTintByBaseAlpha < UiType( Slider ); Default( 0.0 ); Range( 0.0, 1.0 ); UiGroup( "Material,10/16" ); >;
 
 	float4 MainPs( PixelInput i, bool isFrontFace : SV_IsFrontFace ) : SV_Target0
 	{
@@ -74,6 +78,17 @@ PS
 		float4 colorSample = g_tColor.Sample( g_sAniso, uv );
 		float3 albedo = colorSample.rgb;
 		float alpha = colorSample.a;
+		
+		// Apply color tinting
+		if ( g_flBlendTintByBaseAlpha > 0.0 )
+		{
+			float3 tintedColor = albedo * g_vColorTint;
+			albedo = lerp( albedo, tintedColor, alpha * g_flBlendTintByBaseAlpha );
+		}
+		else
+		{
+			albedo *= g_vColorTint;
+		}
 		
 		// Alpha test - discard pixels below threshold
 		if ( g_flAlphaTestReference > 0.0 && alpha < g_flAlphaTestReference )

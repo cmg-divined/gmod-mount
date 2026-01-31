@@ -19,6 +19,13 @@ public static class GModSettings
 	/// Note: ForceMwbProcessing takes priority if both are enabled.
 	/// </summary>
 	public static bool ForceBftProcessing { get; set; } = false;
+	
+	/// <summary>
+	/// When true, forces all materials to be processed as MadIvan18 format regardless of path detection.
+	/// MadIvan18 format: roughness in normal map alpha, metalness in exponent red channel.
+	/// Note: ForceMwbProcessing and ForceBftProcessing take priority if enabled.
+	/// </summary>
+	public static bool ForceMadIvan18Processing { get; set; } = false;
 }
 
 /// <summary>

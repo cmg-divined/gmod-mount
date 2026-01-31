@@ -99,8 +99,8 @@ internal class GModMaterial : ResourceLoader<GModMount>
 			string vmtContent = Encoding.UTF8.GetString( data );
 			var vmt = VmtFile.Load( vmtContent );
 			
-			// Detect format and extract PBR properties
-			var pbrProps = PseudoPbrFormats.ExtractProperties( vmt );
+			// Detect format and extract PBR properties (pass path for path-based detection)
+			var pbrProps = PseudoPbrFormats.ExtractProperties( vmt, _entry.FullPath );
 			
 			// Log detected format
 			Log.Info( $"GModMaterial: {_entry.FullPath} -> {pbrProps.Format} (shader: {vmt.Shader})" );
@@ -108,12 +108,20 @@ internal class GModMaterial : ResourceLoader<GModMount>
 			// Create material based on detected format
 			var materialName = _entry.FullPath.Replace( ".vmt", "" ).Replace( '\\', '/' );
 			
+			// Check for eye shader first (special handling)
+			if ( pbrProps.IsEyeShader )
+			{
+				Log.Info( $"    Eye shader detected" );
+				return CreateEyeMaterial( materialName, pbrProps );
+			}
+			
 			return pbrProps.Format switch
 			{
 				PbrFormat.ExoPBR => CreateExoPbrMaterial( materialName, pbrProps ),
 				PbrFormat.GPBR => CreateGpbrMaterial( materialName, pbrProps ),
 				PbrFormat.MWBPBR => CreateMwbMaterial( materialName, pbrProps ),
 				PbrFormat.BFTPseudoPBR => CreateBftMaterial( materialName, pbrProps ),
+				PbrFormat.MadIvan18 => CreateMadIvan18Material( materialName, pbrProps ),
 				_ => CreateSourceMaterial( materialName, pbrProps )
 			};
 		}
@@ -371,10 +379,10 @@ internal class GModMaterial : ResourceLoader<GModMount>
 					}
 					roughnessTexture = CreateTexture( roughData, vtf.Width, vtf.Height );
 					
-					// Make normal map alpha opaque and flip green channel (DirectX to OpenGL)
+					// Make normal map alpha opaque (green flip disabled for testing)
 					for ( int i = 0; i < rgba.Length; i += 4 )
 					{
-						rgba[i + 1] = (byte)(255 - rgba[i + 1]); // Flip green
+						// rgba[i + 1] = (byte)(255 - rgba[i + 1]); // Flip green - DISABLED
 						rgba[i + 3] = 255; // Opaque alpha
 					}
 					normalTexture = CreateTexture( rgba, vtf.Width, vtf.Height );
@@ -485,6 +493,126 @@ internal class GModMaterial : ResourceLoader<GModMount>
 	}
 
 	/// <summary>
+	/// Create material for MadIvan18 models.
+	/// Roughness: normal map alpha
+	/// Metalness: exponent map red channel
+	/// </summary>
+	private Material CreateMadIvan18Material( string name, ExtractedPbrProperties props )
+	{
+		// Choose shader based on transparency and culling needs
+		bool needsTranslucency = props.IsTranslucent || props.IsAdditive;
+		string shaderPath = GetShaderPath( needsTranslucency, props.IsNoCull );
+		var material = Material.Create( name, shaderPath );
+		
+		// Load base color texture
+		material.Set( "g_tColor", LoadTexture( props.BaseTexturePath ) ?? Texture.White );
+		
+		// Roughness from normal map alpha channel
+		Texture roughnessTexture = DefaultRoughness;
+		Texture normalTexture = DefaultNormal;
+		
+		if ( !string.IsNullOrEmpty( props.BumpMapPath ) )
+		{
+			var normalData = LoadTextureRaw( props.BumpMapPath );
+			if ( normalData != null )
+			{
+				try
+				{
+					var vtf = VtfFile.Load( normalData );
+					var rgba = vtf.ConvertToRGBA( forceOpaqueAlpha: false );
+					if ( rgba != null )
+					{
+						int pixels = vtf.Width * vtf.Height;
+						
+						// Extract roughness from alpha channel
+						// MadIvan18 stores GLOSS in alpha: black=matte, white=shiny
+						// PBR roughness is opposite: black=shiny, white=matte
+						// So we invert: roughness = 255 - gloss
+						var roughData = new byte[pixels * 4];
+						for ( int i = 0; i < pixels; i++ )
+						{
+							byte gloss = rgba[i * 4 + 3];
+							byte roughness = (byte)(255 - gloss); // Invert gloss to roughness
+							roughData[i * 4 + 0] = roughness;
+							roughData[i * 4 + 1] = roughness;
+							roughData[i * 4 + 2] = roughness;
+							roughData[i * 4 + 3] = 255;
+						}
+						roughnessTexture = CreateTexture( roughData, vtf.Width, vtf.Height );
+						Log.Info( $"    MadIvan18: roughness from normal map alpha (update) (inverted from gloss)" );
+						
+						// Flip green channel for normal map (DirectX to OpenGL)
+						// DISABLED FOR TESTING
+						for ( int i = 0; i < pixels; i++ )
+						{
+							// rgba[i * 4 + 1] = (byte)(255 - rgba[i * 4 + 1]); // Flip green - DISABLED
+							rgba[i * 4 + 3] = 255;
+						}
+						normalTexture = CreateTexture( rgba, vtf.Width, vtf.Height );
+					}
+				}
+				catch { }
+			}
+		}
+		
+		// Metalness from exponent map red channel
+		Texture metalnessTexture = Texture.Black;
+		float metalnessScale = 0f;
+		
+		if ( !string.IsNullOrEmpty( props.PhongExponentTexturePath ) )
+		{
+			var expData = LoadTextureRaw( props.PhongExponentTexturePath );
+			if ( expData != null )
+			{
+				try
+				{
+					var vtf = VtfFile.Load( expData );
+					var rgba = vtf.ConvertToRGBA();
+					if ( rgba != null )
+					{
+						int pixels = vtf.Width * vtf.Height;
+						
+						// Red channel contains metalness
+						var metalData = new byte[pixels * 4];
+						for ( int i = 0; i < pixels; i++ )
+						{
+							byte metal = rgba[i * 4 + 0];
+							metalData[i * 4 + 0] = metal;
+							metalData[i * 4 + 1] = metal;
+							metalData[i * 4 + 2] = metal;
+							metalData[i * 4 + 3] = 255;
+						}
+						metalnessTexture = CreateTexture( metalData, vtf.Width, vtf.Height );
+						metalnessScale = 1f;
+						Log.Info( $"    MadIvan18: metalness from exponent red channel" );
+					}
+				}
+				catch { }
+			}
+		}
+		
+		material.Set( "g_tNormal", normalTexture );
+		material.Set( "g_tRoughness", roughnessTexture );
+		material.Set( "g_tMetalness", metalnessTexture );
+		material.Set( "g_flMetalnessScale", metalnessScale );
+		material.Set( "g_flRoughnessScaleFactor", 1f );
+		material.Set( "g_tAmbientOcclusion", DefaultAo );
+		
+		// Alpha test
+		if ( props.IsAlphaTest && !needsTranslucency )
+			material.Set( "g_flAlphaTestReference", props.AlphaTestReference );
+		
+		// Translucent or additive
+		if ( needsTranslucency )
+			material.Set( "g_flOpacity", props.Alpha );
+		
+		// Apply color tinting
+		ApplyColorTinting( material, props );
+		
+		return material;
+	}
+
+	/// <summary>
 	/// Create material from standard Source Engine format.
 	/// Estimates PBR values from phong and envmap properties.
 	/// </summary>
@@ -562,6 +690,9 @@ internal class GModMaterial : ResourceLoader<GModMount>
 		if ( needsTranslucency )
 			material.Set( "g_flOpacity", props.Alpha );
 		
+		// Apply color tinting
+		ApplyColorTinting( material, props );
+		
 		return material;
 	}
 
@@ -574,6 +705,66 @@ internal class GModMaterial : ResourceLoader<GModMount>
 		if ( noCull )
 			return "shaders/gmod_pbr_twosided.shader";
 		return "shaders/gmod_pbr.shader";
+	}
+	
+	/// <summary>
+	/// Create material for Source Engine eye shaders (Eyes/EyeRefract).
+	/// Uses our custom gmod_eyes.shader with Source-style projection.
+	/// </summary>
+	private Material CreateEyeMaterial( string name, ExtractedPbrProperties props )
+	{
+		var material = Material.Create( name, "eyeball.shader" );
+		
+		// g_tIris - main iris/sclera texture
+		if ( !string.IsNullOrEmpty( props.IrisTexturePath ) )
+			material.Set( "g_tColor", LoadTexture( props.IrisTexturePath ) ?? Texture.White );
+		else
+			material.Set( "g_tColor", Texture.White );
+		
+		// g_tNormal - cornea/sclera normal map
+		if ( !string.IsNullOrEmpty( props.CorneaTexturePath ) )
+			material.Set( "g_tNormal", LoadTexture( props.CorneaTexturePath ) ?? DefaultNormal );
+		else
+			material.Set( "g_tNormal", DefaultNormal );
+		
+		// g_tIrisNormal - iris-specific normal
+		material.Set( "g_tIrisNormal", DefaultNormal );
+		
+		// g_tOcclusion - ambient occlusion
+		if ( !string.IsNullOrEmpty( props.EyeAmbientOcclTexturePath ) )
+			material.Set( "g_tOcclusion", LoadTexture( props.EyeAmbientOcclTexturePath ) ?? Texture.White );
+		else
+			material.Set( "g_tOcclusion", Texture.White );
+		
+		// g_tIrisRoughness
+		material.Set( "g_tIrisRoughness", DefaultRoughness );
+		
+		// g_tIrisMask - height/parallax mask
+		material.Set( "g_tIrisMask", Texture.White );
+		
+		// g_tReflectance
+		material.Set( "g_tReflectance", Texture.White );
+		
+		// Default eye projection vectors
+		material.Set( "g_vEyeOrigin", Vector3.Zero );
+		material.Set( "g_vIrisProjectionU", new Vector4( 0.0f, 0.05f, 0.0f, 0.5f ) );
+		material.Set( "g_vIrisProjectionV", new Vector4( 0.0f, 0.0f, 0.05f, 0.5f ) );
+		
+		return material;
+	}
+	
+	/// <summary>
+	/// Apply $color2 tinting to material if specified in properties.
+	/// </summary>
+	private static void ApplyColorTinting( Material material, ExtractedPbrProperties props )
+	{
+		if ( props.Color2 != null && props.Color2.Length >= 3 )
+		{
+			material.Set( "g_vColorTint", new Vector3( props.Color2[0], props.Color2[1], props.Color2[2] ) );
+			
+			if ( props.BlendTintByBaseAlpha )
+				material.Set( "g_flBlendTintByBaseAlpha", 1f );
+		}
 	}
 
 	/// <summary>
@@ -599,8 +790,9 @@ internal class GModMaterial : ResourceLoader<GModMount>
 			// Flip green channel: Source uses DirectX convention, s&box uses OpenGL
 			// DirectX: Y+ points down (green 128=flat, >128=down, <128=up)
 			// OpenGL: Y+ points up (opposite)
-			for ( int i = 0; i < rgba.Length; i += 4 )
-				rgba[i + 1] = (byte)(255 - rgba[i + 1]); // Flip green channel
+			// DISABLED FOR TESTING
+			// for ( int i = 0; i < rgba.Length; i += 4 )
+			//	rgba[i + 1] = (byte)(255 - rgba[i + 1]); // Flip green channel
 
 			return CreateTexture( rgba, vtf.Width, vtf.Height );
 		}

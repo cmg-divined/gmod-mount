@@ -322,3 +322,46 @@ public struct StudioBBox
 	public int HitboxNameOffset;
 	public unsafe fixed int Unused[8];
 }
+
+/// <summary>
+/// Eyeball data (mstudioeyeball_t).
+/// Contains the positioning and projection data for eye rendering.
+/// Total size: 172 bytes
+/// </summary>
+[StructLayout( LayoutKind.Sequential, Pack = 1 )]
+public struct StudioEyeball
+{
+	public int NameOffset;       // 0: Offset to name string
+	public int Bone;             // 4: Bone the eye is attached to
+	public Vector3 Org;          // 8: Origin position in local bone space (12 bytes)
+	public float ZOffset;        // 20: Z offset for iris
+	public float Radius;         // 24: Eyeball radius (diameter / 2)
+	public Vector3 Up;           // 28: Up vector (12 bytes)
+	public Vector3 Forward;      // 40: Forward/look direction (12 bytes)
+	public int Texture;          // 52: Texture/material index
+	public int Unused1;          // 56
+	public float IrisScale;      // 60: Iris scale (1.0 / iris_scale from QC)
+	public int Unused2;          // 64
+	// upperflexdesc[3] - raiser, neutral, lowerer flex descriptors
+	public int UpperFlexDesc0;   // 68
+	public int UpperFlexDesc1;   // 72
+	public int UpperFlexDesc2;   // 76
+	// lowerflexdesc[3]
+	public int LowerFlexDesc0;   // 80
+	public int LowerFlexDesc1;   // 84
+	public int LowerFlexDesc2;   // 88
+	// uppertarget[3] - angles in radians
+	public float UpperTarget0;   // 92
+	public float UpperTarget1;   // 96
+	public float UpperTarget2;   // 100
+	// lowertarget[3]
+	public float LowerTarget0;   // 104
+	public float LowerTarget1;   // 108
+	public float LowerTarget2;   // 112
+	public int UpperLidFlexDesc; // 116: Upper lid flex desc index
+	public int LowerLidFlexDesc; // 120: Lower lid flex desc index
+	public unsafe fixed int Unused3[4]; // 124-139: (16 bytes)
+	public byte NonFACS;         // 140
+	public unsafe fixed byte Unused4[3]; // 141-143: padding (3 bytes)
+	public unsafe fixed int Unused5[7];  // 144-171: Final padding (28 bytes)
+}

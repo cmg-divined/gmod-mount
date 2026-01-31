@@ -32,6 +32,9 @@ public class MdlFile
 
 	// Hitboxes
 	public List<MdlHitboxSet> HitboxSets { get; } = new();
+	
+	// Eyeballs (for eye shader rendering)
+	public List<MdlEyeball> Eyeballs { get; } = new();
 
 	/// <summary>
 	/// Load an MDL file from a byte array.
@@ -256,6 +259,22 @@ public class MdlFile
 					string modelName = ReadFixedString( reader.ReadBytes( 64 ), 64 );
 					
 					// Read rest of StudioModel struct manually
+					// mstudiomodel_t layout (148 bytes total):
+					// 0-63: name (64 bytes) - already read
+					// 64: type (int)
+					// 68: boundingradius (float)
+					// 72: nummeshes (int)
+					// 76: meshindex (int)
+					// 80: numvertices (int)
+					// 84: vertexindex (int)
+					// 88: tangentsindex (int)
+					// 92: numattachments (int)
+					// 96: attachmentindex (int)
+					// 100: numeyeballs (int)
+					// 104: eyeballindex (int)
+					// 108: vertexdata pointer (int)
+					// 112: tangentdata pointer (int)
+					// 116-147: unused (32 bytes = 8 ints)
 					int modelType = reader.ReadInt32();
 					float boundingRadius = reader.ReadSingle();
 					int meshCount = reader.ReadInt32();
@@ -270,6 +289,8 @@ public class MdlFile
 					reader.ReadInt32(); // VertexDataPointer
 					reader.ReadInt32(); // TangentDataPointer
 					for ( int u = 0; u < 8; u++ ) reader.ReadInt32(); // Unused
+					
+					Log.Info( $"MdlFile: Model '{modelName}': meshes={meshCount}, eyeballs={eyeballCount}, eyeballOffset={eyeballOffset}" );
 
 					var mdlModel = new MdlModel
 					{
@@ -303,10 +324,57 @@ public class MdlFile
 							{
 								Index = k,
 								MaterialIndex = mesh.Material,
+								MaterialType = mesh.MaterialType,
+								MaterialParam = mesh.MaterialParam,
 								VertexCount = mesh.VertexCount,
 								VertexOffset = mesh.VertexOffset,
 								Center = mesh.Center
 							} );
+						}
+					}
+					
+					// Read eyeballs within this model (NOTE: read eyeballs BEFORE we fill in their texture indices from meshes)
+					if ( eyeballCount > 0 && eyeballOffset != 0 )
+					{
+						long eyeballsStart = modelStart + eyeballOffset;
+						reader.BaseStream.Position = eyeballsStart;
+						int eyeballSize = Marshal.SizeOf<StudioEyeball>();
+						
+						Log.Info( $"MdlFile: Reading {eyeballCount} eyeballs from model '{modelName}' (modelOffset={eyeballOffset}, structSize={eyeballSize}, expected=172)" );
+						
+						for ( int k = 0; k < eyeballCount; k++ )
+						{
+							long eyeballStart = reader.BaseStream.Position;
+							
+							if ( eyeballStart + eyeballSize > fileLength )
+							{
+								Log.Warning( $"MdlFile.ReadBodyParts: eyeball {k} would exceed file bounds" );
+								break;
+							}
+							
+							var eyeball = reader.ReadStruct<StudioEyeball>();
+							string eyeballName = reader.ReadStringAtOffset( eyeballStart, eyeball.NameOffset );
+							
+							Log.Info( $"  Eyeball[{k}]: name='{eyeballName}', bone={eyeball.Bone}, texture={eyeball.Texture}" );
+							Log.Info( $"    Origin=({eyeball.Org.x:F3}, {eyeball.Org.y:F3}, {eyeball.Org.z:F3})" );
+							Log.Info( $"    Radius={eyeball.Radius:F3}, IrisScale={eyeball.IrisScale:F3}" );
+							Log.Info( $"    Up=({eyeball.Up.x:F3}, {eyeball.Up.y:F3}, {eyeball.Up.z:F3})" );
+							Log.Info( $"    Forward=({eyeball.Forward.x:F3}, {eyeball.Forward.y:F3}, {eyeball.Forward.z:F3})" );
+							
+							Eyeballs.Add( new MdlEyeball
+							{
+								Name = eyeballName,
+								BoneIndex = eyeball.Bone,
+								Origin = eyeball.Org,
+								ZOffset = eyeball.ZOffset,
+								Radius = eyeball.Radius,
+								Up = eyeball.Up,
+								Forward = eyeball.Forward,
+								TextureIndex = eyeball.Texture,
+								IrisScale = eyeball.IrisScale
+							} );
+							
+							reader.BaseStream.Position = eyeballStart + eyeballSize;
 						}
 					}
 
@@ -322,7 +390,28 @@ public class MdlFile
 			// Move to next body part (16 bytes per body part)
 			reader.BaseStream.Position = bodyPartStart + 16;
 		}
-		Log.Info( $"MdlFile: Read {BodyParts.Count} body parts" );
+		
+		// Fill in eyeball texture indices from mesh materialParam
+		// According to Crowbar: aModel.theEyeballs(aMesh.materialParam).theTextureIndex = aMesh.materialIndex
+		// MaterialType 1 indicates an eyeball mesh
+		foreach ( var bodyPart in BodyParts )
+		{
+			foreach ( var model in bodyPart.Models )
+			{
+				foreach ( var mesh in model.Meshes )
+				{
+					// MaterialType 1 = eyeball mesh
+					if ( mesh.MaterialType == 1 && mesh.MaterialParam >= 0 && mesh.MaterialParam < Eyeballs.Count )
+					{
+						var eyeball = Eyeballs[mesh.MaterialParam];
+						eyeball.TextureIndex = mesh.MaterialIndex;
+						Log.Info( $"MdlFile: Eyeball[{mesh.MaterialParam}] texture index set to {mesh.MaterialIndex} from mesh" );
+					}
+				}
+			}
+		}
+		
+		Log.Info( $"MdlFile: Read {BodyParts.Count} body parts, {Eyeballs.Count} eyeballs" );
 	}
 
 	private void ReadMaterials( BinaryReader reader )
@@ -598,6 +687,8 @@ public class MdlMesh
 {
 	public int Index { get; set; }
 	public int MaterialIndex { get; set; }
+	public int MaterialType { get; set; }
+	public int MaterialParam { get; set; }
 	public int VertexCount { get; set; }
 	public int VertexOffset { get; set; }
 	public Vector3 Center { get; set; }
@@ -635,4 +726,55 @@ public class MdlHitbox
 	public int Group { get; set; }
 	public Vector3 Min { get; set; }
 	public Vector3 Max { get; set; }
+}
+
+/// <summary>
+/// Parsed eyeball data for eye shader rendering.
+/// Contains the positioning and projection vectors for proper iris mapping.
+/// </summary>
+public class MdlEyeball
+{
+	public string Name { get; set; }
+	public int BoneIndex { get; set; }
+	public Vector3 Origin { get; set; }      // Eye center in bone local space
+	public float ZOffset { get; set; }       // Z offset for iris depth
+	public float Radius { get; set; }        // Eyeball radius
+	public Vector3 Up { get; set; }          // Up vector for projection
+	public Vector3 Forward { get; set; }     // Forward/look direction
+	public int TextureIndex { get; set; }    // Material index
+	public float IrisScale { get; set; }     // Iris texture scale
+	
+	/// <summary>
+	/// Compute iris projection U vector for the eye shader.
+	/// The projection maps world positions to iris UV coordinates.
+	/// </summary>
+	public Vector4 ComputeIrisProjectionU()
+	{
+		// Left vector is perpendicular to forward and up
+		var left = Vector3.Cross( Up, Forward ).Normal;
+		
+		// Scale based on iris scale and radius
+		// iris_scale typically around 0.5-1.0, radius around 0.5-1.0
+		float scale = 1.0f / ( Radius * IrisScale * 2.0f );
+		
+		// The W component is the offset: -dot(left, origin) * scale + 0.5
+		// This centers the UV at 0.5 when world pos equals origin
+		float offset = -Vector3.Dot( left, Origin ) * scale + 0.5f;
+		
+		return new Vector4( left.x * scale, left.y * scale, left.z * scale, offset );
+	}
+	
+	/// <summary>
+	/// Compute iris projection V vector for the eye shader.
+	/// </summary>
+	public Vector4 ComputeIrisProjectionV()
+	{
+		// Up vector scaled for projection
+		float scale = 1.0f / ( Radius * IrisScale * 2.0f );
+		
+		// The W component centers the UV
+		float offset = -Vector3.Dot( Up, Origin ) * scale + 0.5f;
+		
+		return new Vector4( Up.x * scale, Up.y * scale, Up.z * scale, offset );
+	}
 }
