@@ -27,7 +27,7 @@ This mount reads GMod's VPK archives and Workshop addons (GMA files) and makes t
 
 **Materials (VMT)**
 - Converts Source shaders to s&box's complex shader
-- Supports custom handling for different pseudo-PBR techniques, including MWB, BFT's method, EXOPBR, MadIvan materials etc based on Xenthio's work from his [RTX remix project](https://github.com/Xenthio/garrys-mod-rtx-remixed)
+- Supports custom handling for different pseudo-PBR techniques, including MWB, BFT's method, EXOPBR, MadIvan materials etc based on Xenthio's work from his [RTX remix project](https://github.com/Xenthio/garrys-mod-rtx-remixed).
 - Base textures and normal maps
 - Transparency ($translucent, $alphatest)
 - Self-illumination
